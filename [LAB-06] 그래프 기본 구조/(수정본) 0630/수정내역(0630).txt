@@ -1,0 +1,19 @@
+[LAB-06] 2강 Line Plot
+
+	p33
+		import seaborn as sb <-- 구문 누락 추가
+
+	p35
+		linestyle 파라미터 이름 오타 수정 (linestype)
+
+
+[LAB-06] 3강 KDE Plot
+
+	p21 ~ 24
+		hue 파라미터 누락 및 모듈 평균선 구현 else절 들여쓰기 이슈
+
+
+[LAB-06] 4강 Histogram
+
+	p19
+		import numpy as np <-- 구문 누락 추가
