@@ -15,6 +15,7 @@ from . import my_plot
 from . import my_stats
 from . import my_prep
 from . import my_qtcheck
+from . import my_logit
 
 def fit_model(data, y, summary=False):
     """
@@ -1383,21 +1384,3 @@ def report_model(fit, title=True, plot=True):
 
     heading("#### 4) 독립성 검정")             
     test_independent(fit)
-
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-
-
-
-
-
