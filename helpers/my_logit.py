@@ -3,6 +3,10 @@ import seaborn as sb
 from IPython.display import display, Markdown
 from pandas import DataFrame
 from statsmodels.api import add_constant, Logit 
+from sklearn.metrics import (
+    confusion_matrix, roc_curve, roc_auc_score,
+    accuracy_score, recall_score, precision_score, f1_score
+)
 
 from . import my_plot 
 from . import my_stats
@@ -460,13 +464,174 @@ def auto_logit(data, y, report=True, plot=True, threshold=0.5,
 
     # --- 4) 최종 적합 모델 객체 반환 ---
     return fit 
-        
-        
-        
-        
-        
-        
-        
+
+
+def plot_confusion(fit, threshold=0.5, palette=None, title=None,
+                   size=640, save_path=None, ax=None):
+    """
+    혼동행렬(Confusion Matrix)을 정사각형 히트맵으로 시각화한다.
+
+    Args:
+        fit : 'fit_model' 함수로 적합된 회귀분석 결과 객체 
+        threshold (float): 확률을 0/1로 분류하는 임계값(기본값: 0.5)
+        palette (str): 히트맵 색상 팔레트 이름 (기본값:None -> "Blues")
+        title (str) : 그래프 제목 (기본값:None -> "혼동행렬(Confusion Matrix)")
+        size (int): 캔버스 한 변의 픽셀 크기. 가로, 세로가 같다.(기본값: 640)
+        save_path (str) : 이미지 저장 경로 (기본값: None)
+        ax : 그래프를 그릴 Axes 객체 (기본값:None -> 캔버스를 새로 생성)
+    """
+    # --- 1) 실제값과 임계값 기준 예측 범주로 혼동행렬 구성 --- 
+    y_true = np.asarray(fit.model.endog).astype(int)
+    y_pred = (np.asarray(fit.predict())>threshold).astype(int)
+    cm = confusion_matrix(y_true, y_pred)
+
+    cmdf = DataFrame(cm, 
+                     index=["실제 0 (Negative)", "실제 1 (Positive)"], 
+                     columns=["예측 0 (Negative)", "예측 1 (Positive)"])
+    
+    # --- 2) 시각화 --- 
+    # ax를 넘겨받으면 서브플롯의 한 칸에 그리고, 없으면 단독 캔버스를 만든다.
+    fig = None
+    if ax is None:
+        fit, ax = my_plot.init(width=size, height=size)
+
+    ax.set_title(title if title else "혼동행렬(Confusion Matrix)", 
+                 fontsize=24, fontweight=500, pad=15)
+
+    # square = True로 셀을 정사각형으로 맞추고, 값이 표기되므로 색상막대(cbar)는 생략한다. 
+    # 빈도(정수)를 그대로 표기하도록 fmt="d" 사용
+    my_plot.heatmap(data=cmdf, annot=True, fmt="d", 
+                    palette=palette if palette else "Blues",
+                    annot_kws={"size":size*0.07}, # 글자크기를 그래프 크기의 7%로 설정 
+                    square=True, cbar=False, ax=ax)
+
+    if fig is not None:
+        my_plot.show(save_path=save_path)
+
+
+def plot_roc(fit, palette=None, title=None, size=640, save_path=None, ax=None):
+    """
+    ROC Curve를 정사각형으로 그리고 AUC(곡선 아래 면적)를 제목에 표시한다. 
+
+    Args:
+        fit: 'fit_model' 함수로 적합된 회귀분석 결과 객체 
+        palette (str): 곡선 색상에 사용할 팔레트 이름(기본값: None -> 파랑 단색)
+        title (str) : 그래프 제목 (기본값:None -> "ROC Curve (AUC = ...)")
+        size (str) : 캔버스 한 변의 픽셀 크기. 가로, 세로가 같다. (기본값: 640)
+        save_path (str) : 이미지 저장 경로 (기본값: None)
+        ax : 그래프를 그릴 Axes 객체 (기본값:None -> 캔버스를 새로 생성 )
+    """
+    # --- 1) 예측 확률로 ROC 좌표와 AUC 계산 
+    y_true = np.asarray(fit.model.endog).astype(int) # 실제 종속변수 값
+    proba = np.asarray(fit.predict()) #모델의 예측값 --> 1이 될 확률 
+    auc = roc_auc_score(y_true, proba)
+    roc_fpr, roc_tpr, _ = roc_curve(y_true, proba) # ROC 좌표(FPR, TPR, 임계값)
+
+    # --- 2) 시각화 초기화 ---
+    # 팔레트가 지정되면 첫번째 색을 곡선 색상으로 사용 
+    line_color = sb.color_palette(palette)[0] if palette else "#328CC1"
+
+    fig = None
+    if ax is None:
+        fig, ax = my_plot.init(width=size, height=size)
+
+    # x축 = 위양성률(FPR), y축=재현율(TPR) < - ROC의 표준 축 배치 
+    ax.set_title(title if title else f"ROC Curve (AUC = {auc:.4f})", 
+                 fontsize=24, fontweight=500, pad=15)
+    ax.set_xlabel("위양성률(FPR, 1-특이성)", fontsize=16, fontweight=400, labelpad=5)
+    ax.set_ylabel("재현율(TPR, 민감도)", fontsize=16, fontweight=400, labelpad=5)
+
+    # --- 3) ROC 곡선과 기준선 그리기 
+    my_plot.lineplot(x=roc_fpr, y=roc_tpr, color=line_color, ax=ax)
+
+    # 무작위로 찍었을때의 기준선(대각선)
+    my_plot.lineplot(x=[0,1], y=[0,1], color="red", linestyle="--", ax=ax)
+
+    # x, y 모두 0~1 범위이므로 축 비율을 1:1로 맞추면 그래프 영역이 정사각형이 된다. 
+    ax.set_xlim(0,1)
+    ax.set_ylim(0,1)
+    ax.set_aspect("equal")
+
+    if fig is not None:
+        my_plot.show(save_path=save_path)
+
+def report_performance(fit, threshold=0.5, plot=True, palette=None, 
+                       size=640, save_path=None):
+    """
+    적합된 로지스틱 모델의 분류 성능을 혼동행렬과 평가지표로 정리해 출력한다. 
+
+    위양성률(FPR)과 특이성(TNR)은 sklearn에 함수가 없어 혼동행렬로 직접 계산한다.
+
+    Args:
+        fit : 'fit_model' 함수로 적합된 회귀분석 결과 객체
+        threshold (float) : 확률을 0/1로 분류하는 임계값( 기본값: 0.5)
+        plot (bool): 혼동행렬 히트맵과 ROC Curve를 함께 그릴지 여부(기본값: None)
+        palette (str) : 그래프 색상에 사용할 팔레트 이름( 기본값:None)
+        size (int) : 서브플롯 한 칸에 한 변 픽셀 크기 (기본값: 640)
+        save_path (str) : 이미지 저장 경로 (기본값 : None) 
+    """
+    # --- 1) 실제값, 예측확률, 예측범주 준비 
+    y_true = np.asarray(fit.model.endog).astype(int) # 실제 종속변수(0/1)
+    proba = np.asarray(fit.predict()) # 1이 될 확률 
+    y_pred = (proba > threshold).astype(int) # 임계값 기준 예측 범주 (0/1)
+
+    # --- 2) 혼동행렬 및 TN/FP/FN/TP 분해 
+    cm = confusion_matrix(y_true, y_pred)
+    tn, fp, fn, tp = cm.ravel()
+
+    # --- 3) 평가지표 계산 
+    fallout = fp/ (fp+tn) if (fp+tn) > 0 else 0.0 #위양성률(FPR)
+    specificity = tn/ (tn+fp) if (tn+fp) > 0 else 0.0 # 특이성( TNR= 1-FPR) 
+
+    auc = roc_auc_score(y_true, proba)
+
+    # AUC 구간별 판정 (0.5는 동전 던지기와 같아 학습이 되지 않은 상태)
+    if auc < 0.6 :
+        auc_grade = "모형이 아무것도 학습하지 못함"
+    elif auc < 0.7:
+        auc_grade = "낮음"
+    elif auc < 0.8:
+        auc_grade = "쓸 만함"
+    elif auc < 0.9:
+        auc_grade = "우수"
+    else:
+        auc_grade = "매우 우수"
+
+    # 진단 오즈비 = (TP x TN) / (FP x FN). 오분류가 하나도 없으면 분모가 0이므로 무한대로 둔다
+    if fp * fn > 0 :
+        dor = (tp*tn) / (fp*fn)
+    else:
+        dor = np.inf
+
+    # --- 4) 평가표 구성
+    metric = DataFrame([{
+        "정확도(Accuracy)": accuracy_score(y_true, y_pred),
+        "정밀도(Precision)": precision_score(y_true, y_pred, zero_division=0),
+        "재현율(Recall, TPR)": recall_score(y_true, y_pred, zero_division=0), 
+        "위양성율(Fallout, FPR)": fallout, 
+        "특이성(Specificity, TNR)": specificity, 
+        "F1":f1_score(y_true, y_pred, zero_division=0), 
+        "AUC": auc, 
+        "AUC 판단": auc_grade, 
+        "진단오즈비(DOR)":dor, 
+    }], index=["preformance"])
+
+    # --- 5) 혼동행렬
+    cmdf = DataFrame(cm, 
+                     index=["실제 0 (Negative)", "실제 1 (Positive)"], 
+                     columns=["예측 0 (Negative)", "예측 1 (Positive)"])
+     
+    # --- 6) 결과 출력 
+    display(cmdf)
+    display(metric)
+
+    # --- 7) 시각화 : 혼동행렬 히트맵 + ROC Curve 를 1행 2열로 나란히 배치 
+    if plot:
+        fig, ax = my_plot.init(width=size, height=size, rows=1, cols=2) 
+        plot_confusion(fit, threshold=threshold, palette=palette, ax=ax[0])
+        plot_roc(fit, palette=palette, ax=ax[1])    
+        my_plot.show(save_path=save_path)
+
         
         
         

@@ -353,7 +353,7 @@ def violinPlot(data=None, x=None, y=None, hue=None, orient=None, palette=None,
 # 히트맵 모듈화 
 def heatmap(data=None, annot=True, fmt="0.2f", linewidths=0.5, 
             palette=None, title=None, xlabel=None, ylabel=None,
-            width=1280, height=640, save_path=None, ax=None):
+            width=1280, height=640, save_path=None, ax=None, **params):
     """
     히트맵을 그린다. 
 
@@ -380,7 +380,7 @@ def heatmap(data=None, annot=True, fmt="0.2f", linewidths=0.5,
     ax.grid(False) 
 
     # 히트맵 그리기
-    sb.heatmap(data=data, annot=annot, fmt=fmt, linewidths=linewidths, cmap=palette, ax=ax)
+    sb.heatmap(data=data, annot=annot, fmt=fmt, linewidths=linewidths, cmap=palette, ax=ax, **params)
 
     # 그래프 표시 
     if fig is not None:
