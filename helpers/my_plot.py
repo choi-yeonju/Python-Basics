@@ -282,7 +282,7 @@ def histplot(data=None, x=None,hue=None, bins="auto",
 
 
 def boxplot(data=None, x=None, y=None, hue=None, orient=None, palette=None, 
-            order=None, title=None, xlabel=None, ylabel=None, 
+            order=None, title=None, xlabel=None, ylabel=None,
             width=1280, height=640, save_path=None, ax=None): 
     """
     상자그림(boxplot)을 그린다. 
@@ -309,7 +309,7 @@ def boxplot(data=None, x=None, y=None, hue=None, orient=None, palette=None,
         fig, ax = init(width=width, height=height, title=title, xlabel=xlabel, ylabel=ylabel)
 
     # 상자그림 그리기 
-    sb.boxplot(data=data, x=x, y=y, hue=hue, orient=orient, order=order, palette=palette, ax=ax)
+    sb.boxplot(data=data, x=x, y=y, hue=hue, orient=orient, order=order, palette=palette, ax=ax, dodge="auto", legend="auto")
 
     # 그래프 표시 
     if fig is not None:
