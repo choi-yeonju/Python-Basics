@@ -1,7 +1,7 @@
 import numpy as np
 import seaborn as sb
 from IPython.display import display, Markdown
-from pandas import DataFrame
+from pandas import DataFrame, concat
 from statsmodels.api import add_constant, Logit 
 from sklearn.metrics import (
     confusion_matrix, roc_curve, roc_auc_score,
@@ -10,6 +10,10 @@ from sklearn.metrics import (
 
 from . import my_plot 
 from . import my_stats
+from . import my_prep
+
+from scipy.stats import chi2
+from statsmodels.stats.stattools import durbin_watson
 
 def fit_model(data, y, summary=False):
     """
@@ -632,7 +636,7 @@ def report_performance(fit, threshold=0.5, plot=True, palette=None,
         my_plot.show(save_path=save_path)
 
         
-def test_linear(fit, data, alpha=0.05):
+def test_linear(fit=None, data=None, yname=None, xnames=None, targets=None, alpha=0.05):
     """
     Box - Tidwell 검정으로 연속형 독립변수의 로짓 선형성을 점검한다. 
 
@@ -643,21 +647,27 @@ def test_linear(fit, data, alpha=0.05):
     Args: 
         fit: 'fit_model' 함수로 적합된 회귀분석 결과 객체
         data : 회귀분석에 사용한 원본 데이터 프레임. 독립변수와 종속변수 모두 포함해야 한다
+        yname (str) : 종속변수 컬럼명
+        xname (list) : 모델에 투입된 독립변수 이름 목록 
+        targets (list) : 검정할 변수 목록. None이면 'xname' 중 연속형 전체 (기본값: None)
         alpha (float): 유의수준 (기본값: 0.05)
     """
     # --- 1) 검정 대상 결정 ( 상수항 제외, 연속형만 )
-    yname = fit.model.endog_names
+    if yname is None:
+        yname = fit.model.endog_names
 
-    xnames = []
-    for name in fit.model.exog_names:
-        if name != "const":
-            xnames.append(name)
+    if xnames is None:
+        xnames = []
+        for name in fit.model.exog_names:
+            if name != "const":
+                xnames.append(name)
 
-    targets = []
-    for x in xnames:
-        # 값의 종류가 3가지 이상인 변수만 연속형으로 간주한다. 
-        if data[x].nunique() > 2:
-            targets.append(x)
+    if targets is None:
+        targets = []
+        for x in xnames:
+            # 값의 종류가 3가지 이상인 변수만 연속형으로 간주한다. 
+            if data[x].nunique() > 2:
+                targets.append(x)
 
     # --- 2) Box-Tidwell 검정 (변수마다 x*ln(x) 항을 하나씩 추가 )
     rows = []
@@ -696,15 +706,598 @@ def test_linear(fit, data, alpha=0.05):
         })
     # 결과표 생성 및 출력 
     result_df = DataFrame(rows).set_index("독립변수")
-    display(result_df) # 결과표 출력 
+    # display(result_df) # 결과표 출력 
+    return result_df
 
 
+def fix_linear(data, y, alpha=0.05, allow_shifted_log=False, max_rounds=None, report=True):
+    """
+    로짓 선형 위배를 한 변수씩 처방하고 재검정하는 루프를 자동으로 수행한다. 
 
+    Args:
+        data : 독립변수와 0/1 종속변수를 모두 포함한 데이터 프레임
+        y (str) : 종속변수 컬럼명 
+        alpha (float) : 유의수준 (기본값: 0.05)
+        allow_shifted_log (bool) : 음수를 포함한 변수도 평행이동 후 로그 변환을 시도할지 여부.
+            이동량이 자의적이어서 계수 해석이 무너지므로 기본값은 False (기본값: False)
+        max_rounds (int) : 최대 반복 횟수, None이면 연속형 독립변수 개수 (기본값: None)
+        report (bool) : 라운드별 진행 상황과 처리 이력표를 출력할지 여부 (기본값: True)
 
+    Returns: 
+        처방이 모두 반영된 회귀분석 결과 객체. 아래 속성이 함께 붙는다. 
+            - 'data_' (DataFrame) : 파생변수가 반영된 데이터프레임 
+            - 'recipe_' (dict) : 변수별 처방 내역. 'apply_recipe'에 그대로 넘겨 쓴다.
+            - 'history_' (DataFrame) : 라운드별 처리 이력표 
+            - 'unresolved_' (list) : 제곱항, 로그변환으로도 해소되지 않은 변수 목록 
+
+    Raises:
+        KeyError : 종속변수 컬럼이 'data'에 없는 경우 
+        ValueError : alpha, max_roundss 가 유효하지 않은 경우
+    """
+    # --- 1) 입력 검증 --- 
+    if y not in data.columns:
+        raise KeyError(f"종속변수 컬럼이 없습니다: '{y}'")
+
+    if not 0 < alpha < 1: 
+        raise ValueError(f"alpha는 0과 1 사이여야 합니다: {alpha}")
+
+    if max_rounds is not None and max_rounds < 1:
+        raise ValueError(f"max_rounds 는 1 이상이어야 합니다: {max_rounds}")
+    
+    # --- 2) 초기 상태 준비 ---
+    tmp = data.copy() 
+    fit = fit_model(tmp, y=y)   # 기준선 모형 
+
+    # 아직 처방하지 않은 연속형 독립변수 ( 이분형은 언제나 직선이므로 제외 )
+    pending = []
+    for x in fit.model.exog_names:
+        if x != "const" and tmp[x].nunique() > 2:
+            pending.append(x)
+
+    if max_rounds is None: # max_rounds 가 지정되지 않으면 
+        max_rounds = len(pending) # 연속형 독립변수가 개수만큼 반복한다
+
+    recipe = {} # 확정된 처방 
+    unresolved = [] # 처방으로 해소하지 못한 변수 
+    history = [] # 라운드별 이력 
+
+    # --- 3) 진단 -> 처방 -> 검증 -> 재진단 루프 ---
+    for rnd in range(1, max_rounds +1):
+        # --- 3-1 ) 진단 : 아직 손대지 않은 변수만 다시 검정한다 ---
+        # 이미 처방한 변수를 다시 넣으면 짝이 되는 제곱항 때문에 판정이 무의미 하다 
+        targets = [x for x in pending if x not in unresolved]
+
+        if not targets: 
+            break
+
+        bt = test_linear(fit, data=tmp, yname=y, targets=targets, alpha=alpha)
+
+        violated = bt[~bt["linearity"]]
+
+        if violated.empty:
+            if report : 
+                print(f"[라운드 {rnd}] 위배 변수 없음 -> 루프 종료")
+            break 
+
+        # --- 3-2 ) 위배가 가장 심한 변수 하나를 고른다 ---
+        target = violated["z"].abs().idxmax()
+
+        if report: 
+            print(f"[라운드 {rnd}] 위배 {len(violated)} 종 -> "
+                  f"'{target}' 처방 (z={violated.loc[target, 'z']})")
+            
+        # --- 3-3 ) 처방1 : 중심화 후 제곱항 추가 ---
+        center = float(tmp[target].mean())
+
+        sq_data = tmp.copy()
+        sq_data[target + "_c"] = sq_data[target] - center
+        sq_data[target + "_c2"] = sq_data[target + "_c"] **2
+        sq_data = sq_data.drop(columns=[target])
+
+        # 적합이 실패하면 제곱항은 후보에서 탈락시킨다.
+        try : 
+            sq_fit = fit_model(sq_data, y=y)
+
+            # 검증 : 제곱항 자체가 유의한가 + 우도비 검정이 개선을 지지 하는가
+            sq_p = float(sq_fit.pvalues[target + "_c2"])
+            lr_stat = 2* (sq_fit.llf - fit.llf)
+            lr_p = float(1 - chi2.cdf(lr_stat, 1))  # 늘어난 모수는 제곱항 1개 
+            sq_ok = bool(sq_p < alpha and lr_p < alpha)
+        except Exception: 
+            sq_fit, sq_p, lr_p, sq_ok = None, np.nan, np.nan, False
+
+        # --- 3-4 ) 처방2 : 로그 변환 ---
+        # 최솟값이 0 이하이면 ln 정의역을 맞추기 위해 평행이동해야 하는데, 
+        # 이동량이 자의적이어서 계수 해석이 무너지므로 기본값에서는 시도하지 않는다.
+        min_value = float(tmp[target].min())
+        shift = 0.0 if min_value > 0 else -min_value + 1.0
+
+        log_fit, log_ok = None, False
+
+        if min_value > 0 or allow_shifted_log:
+            log_data = tmp.copy()
+            log_data[target + "_log"] = np.log(log_data[target] + shift)    
+            log_data = log_data.drop(columns=[target])  
+
+            try:
+                log_fit = fit_model(log_data, y=y)
+
+                # 검증 : 로그 변환은 모수가 늘지 않으므로 우도비 검정을 쓸 수 없다.
+                # 대신 AIC가 좋아졌고 그 변수의 선형성이 회복되었는지로 판정한다. 
+                aic_better = bool(log_fit.aic < fit.aic)    
+
+                log_bt = test_linear(log_fit, data=log_data, yname=y, 
+                                     targets=[target + "_log"], alpha=alpha)
+                log_linear = bool(log_bt.loc[target + "_log", "linearity"])
+                log_ok = bool(aic_better and log_linear)
+            except Exception: 
+                log_fit, log_ok = None, False
+
+        # --- 3-5 ) 두 처방을 견주어 채택한다 ---
+        # 제곱항은 단조 곡선도 근사하므로, '유의하지 않을 때만 로그'로 두면 로그가 맞는 경우에도 제곱항이 먼저 채택된다
+        # 따라서 둘 다 검정을 통과하면 AIC가 낮은 쪽을 고른다. 
+        if sq_ok and log_ok : method = "square" if sq_fit.aic <= log_fit.aic else "log"
+        elif sq_ok: method = "square"
+        elif log_ok: method = "log"
+        else: method =None
+
+        if method == "square":
+            tmp, fit = sq_data, sq_fit
+            recipe[target] = {"method":"square", "center":center, "shift":None}
+            pending.remove(target)
+
+            history.append({
+                "라운드": rnd, "변수": target, "처방": "제곱항", 
+                "제곱항 p": round(sq_p, 4), "검증 p": round(lr_p, 4), 
+                "AIC": round(sq_fit.aic, 2), "채택":True,
+            })
+
+            if report : 
+                print(f" -> 제곱항 채택 (제곱항 p = {sq_p:.4f}), "
+                      f"우도비 p = {lr_p:.4e}, AIC={sq_fit.aic:.2f}")
+                
+        elif method == "log":
+            tmp, fit = log_data, log_fit
+            recipe[target] = {"method":"log", "center":None, "shift":shift}
+            pending.remove(target)
+
+            history.append({
+                "라운드":rnd, "변수":target, "처방":"로그변환",
+                "제곱항 p": round(sq_p, 4) if np.isfinite(sq_p) else np.nan,
+                "검증 p": None, 
+                "AIC": round(log_fit.aic, 2), "채택":True,
+            })
+
+            if report :
+                reason = "제곱항 기각" if not sq_ok else "AIC 우위"
+                print(f" -> 로그변환 채택 ({reason}, AIC = {log_fit.aic:.2f})")
+
+        # --- 3-6 ) 둘 다 실패 : 원본을 그대로 두고 미해소로 기록한다 
+        else:
+            unresolved.append(target)
+
+            history.append({
+                "라운드": rnd, "변수":target, "처방": "미해소", 
+                "제곱항 p":round(sq_p, 4) if np.isfinite(sq_p) else np.nan, 
+                "검증 p":None, 
+                "AIC": round(fit.aic, 2), "채택":False,
+            })
+
+            if report :
+                print(f" -> 제곱항, 로그변환 모두 기각 -> 해결되지 않음")
+    # --- 4) 결과 정리 ---  
+    history_df = DataFrame(history)
+
+    if report: 
+        print() 
+        if not history_df.empty:
+            display(history_df.set_index("라운드"))
+
+            if unresolved:
+                print(f"미해소 변수 : {unresolved}\n"
+                      f"제곱항, 로그변환으로 담기지 않는 형태이므로"
+                      f"구간화나 스플라인이 필요하다는 신호입니다. 한계점으로 보고하세요.")
+    fit.data = tmp
+    fit.recipe = recipe
+    fit.history = history_df
+    fit.unresolved_ = unresolved
+
+    return fit   
+
+def test_independent(fit):
+    """
+    Dubin-Watson으로 잔차의 독립성을 검증한다. 
+
+    로지스틱 회귀는 잔차가 0/1 구조라 일반 잔차를 쓸 수 없으므로 **피어슨 잔차**를 사용한다.
+    본래 시계열 전용 검정이므로, 시간 순서가 없는 데이터에서는 통계량이 정상이어도
+    실제로는 독립이 아닐 수 있다. 최종 판단은 ** 자료 수집 설계 **로 해야 한다.
+
+    Args:
+        fit: 'fit_model' 함수로 적합된 회귀분석 결과 객체
+
+    Returns:
+        DataFrame : Durbin-Watson 통계량과 독립성 판정을 담은 단일 행 결과표 
+    """
+    # --- 1) Durbin-Watson으로 잔차의 독립성을 검정한다. 
+    dw = float(durbin_watson(fit.resid_pearson))    
+
+    # --- 2) DW값에 따른 독립성 판정 및 해석 --- 
+    if 1.5 <= dw <=2.5 : 
+        independence = True
+        conclusion = "독립성 만족"
+    elif dw < 1.5:
+        independence = False
+        conclusion = "독립성 위반 (양(+)의 자기상관)"
+    else: 
+        independence = False
+        conclusion = "독립성 위반 (음(-)의 자기상관)"
+
+    # --- 3) 단일 행 결과표 구성 및 출력 ---
+    result_df = DataFrame([{
+        "statistic":round(dw, 4), 
+        "independence": independence,
+        "result":conclusion
+    }],
+    index=["Durbin-Watson"])
+
+    return result_df
+
+def apply_recipe(data, recipe):
+    """
+    'fix_linear'이 확정한 처방을 다른 데이터프레임에 그대로 재현한다.
+
+    학습 때 사용한 중심화 평균, 평행이동량을 그래도 써야 하므로,
+    신규 데이터를 예측할 때는 반드시 이 함수로 파생변수를 만든다. 
+
+    Args:
+        data : 처방을 적용할 데이터프레임. 처방 대상 원본 컬럼을 모두 포함해야 한다.
+        recipe (dict) : 'fix_linear'이 돌려준 'recipe_' 딕셔너리 
+            {변수명: {'method':'square' | 'log', 'center':float, 'shift':float}}
+
+    Returns:
+        DataFrame : 파생변수가 추가되고 원본 컬럼이 제거된 데이터 프레임 
+
+    Raises: 
+        KeyError : 처방 대상 컬럼이 'data'에 없는 경우 
+        ValueError : 처방 방식이 'square', 'log'가 아닌 경우 
+    """
+    tmp = data.copy()
+
+    for col, rule in recipe.items():
+        if col not in tmp.columns:
+            raise KeyError(f"처방 대상 컬럼이 없습니다: '{col}'")
+
+        method = rule["method"]
+
+        if method == "square":
+            # 중심화 후 제곱 - 평균은 반드시 학습 때 값을 재사용한다
+            tmp[col + "_c"] = tmp[col] - rule["center"]
+            tmp[col + "_c2"] = tmp[col + "_c"] ** 2
+        elif method == "log":
+            # 로그 변환 - 평행이동량도 학습때 값을 재사용한다. 
+            tmp[col + "_log"] = np.log(tmp[col] + rule["shift"])
+        else:
+            raise ValueError(f"지원하지 않는 처방 방식입니다: '{method}'")
+
+        tmp = tmp.drop(columns=[col])
+
+    return tmp
         
+
+def fit_pipeline(data, y, columns=None, *, 
+                 # --- 1) 이상치 대체 (IQR 경계값, 행 삭제 없음)---
+                 outlier = False, # 이상치 대체 수행 여부 
+                 
+                 # --- 2) 로짓 선형성 처방 재현 --- 
+                 recipe = None, # fix_linear 이 확정한 처방 내역
+
+                 # --- 3) 더미변수 인코딩 --- 
+                 encode = True, # 명목형 독립변수의 더미 인코딩 수행 여부 
+
+                 # --- 4) 다중공선성 제거(VIF) --- 
+                 vif = False, # 다중공선성 제거 수행 여부 
+                 vif_threshold = 10.0, # VIF 임계값
+
+                 # --- 5) 정규화 --- 
+                 scale= False, # 정규화 수행 여부 
+                 scale_method = "standard", # 사용할 스케일러 이름 
+
+                 # --- 6) 모델 적합 ---
+                 backward = False, #후진소거법 수행 여부
+                 alpha=0.05, # 후진소거법의 변수 제거 기준 유의수준 
+
+                 # --- 기타 --- 
+                 name = None, # 모델을 구분할 이름, 결과 객체의 'name_' 속성이 된다.
+                 verbose = False): # 단계별 전처리 내역 출력 여부 
+    """
+    플래그로 지정한 전처리를 수행한 뒤 로지스틱 회귀모델을 적합한다. 
+
+    Args:
+        data (DataFrame): 독립변수와 0/1 종속변수를 모두 포함하는 데이터프레임
+        y (str) : 종속변수로 사용할 컬럼명
+        columns (list) : 이상치 대체 대상이 되는 원본 연속형 독립변수 목록 
+        outlier (bool) : 이상치를 IQR 경계값으로 대체할지 여부 (기본값: False)
+        recipe (dict) : 'fix_linear'이 돌려준 'recipe_' None이면 처방을 적용하지 않는다(기본값: None)
+        encode (bool): 명목형 독립변수의 더미 인코딩 수행 여부 (기본값: True)
+        vif (bool) : 다중공선성 제거 수행 여부 (기본값: False)
+        vif_threshold (float) : VIF 임계값 (기본값: 10.0)
+        scale (bool) : 정규화 수행 여부 (기본값: False)
+        scale_method (str) : 사용할 스케일러 이름 (기본값: 'standard')
+        backward (bool) : 후진소거법의 변수 제거 기준 유의수준 (기본값: 0.05)
+        name (str) : 모델을 구분할 이름. 결과 객체의 'name_'속성이 된다. (기본값: None)
+        verbose (bool) : 단계별 전처리 내역 출력 여부 (기본값: False)
+    
+    Returns: 
+        적합이 완료된 회귀분석 결과 객체. 아래 속성이 함께 붙는다. 
+        - 'data_' (DataFrame): 전처리가 끝난 데이터. 'report_variables' 등이 사용한다 
+        - 'recipe_' (dict) : 적용한 로짓 선형성 처방. 신규 예측시, 'apply_recipe'에 넘긴다
+        - 'name_' (str) : 모델을 구분할 이름 
+
+    Raises :
+        KeyError : 종속변수 컬럼이 'data'에 없는 경우 
+        ValueError : 결측치가 남아있는 경우 
+    """
+    # --- 1) 종속변수 확인 및 작업본 준비 ---
+    if y not in data.columns:
+        raise KeyError(f"종속변수 '{y}'가 데이터프레임의 컬럼에 존재하지 않습니다.")    
+
+    df = data.copy() # 원본을 보존하기 위해 복사본으로 작업 
+
+    # --- 2) 이상치 대체 대상 확정 ---
+    # 지정이 없으면 숫자형 독립변수를 자동 선택한다. 
+    if columns is None:
+        columns = []
+        for c in df.select_dtypes(include="number").columns:
+            if c != y:
+                columns.append(c)
+    else:
+        missing = []
+        for c in columns:
+            if c not in df.columns:
+                missing.append(c)
+
+        if missing:
+            raise KeyError(f"데이터프레임에 존재하지 않는 컬럼입니다: {missing}")
         
+    # --- 3) 이상치 대체 (IQR 경계값, 행 삭제 없음) ---
+    # -> 파생변수를 만들기 전에 원본 변수에 적용해야 곡선이 잘리지 않는다. 
+    if outlier and columns:
+        df = my_prep.replace_outlier(df, columns=columns, verbose=verbose)
+
+    # --- 4) 로짓 선형성 처방 재현 (중심화 + 제곱항 또는 로그변환) ---
+    if recipe:
+        df = apply_recipe(df, recipe)
+    
+    # --- 5) 더미변수 인코딩 (명목형 독립변수가 있을 때만 동작한다) ---
+    if encode:
+        nominal_cols = []
+        for c in df.select_dtypes(include=["category", "object"]).columns:
+            if c != y:
+                nominal_cols.append(c)
+
+        if nominal_cols:
+            df = my_prep.dummies(df, columns=nominal_cols, verbose=verbose)
+    # 현재 시점의 독립변수 목록(파생변수, 더미가 추가되었을 수 있다.)
+    alive = [c for c in df.columns if c != y ]
+
+    # --- 6) 다중공선성 제거 (VIF) ---
+    if vif:
+        df = my_prep.reduce_vif(df, columns=alive, threshold=vif_threshold, verbose=verbose)
+        alive = [c for c in df.columns if c != y]
+
+    # --- 7) 정규화 ---
+    if scale:
+        df = my_prep.scaling(df, columns=alive, method=scale_method, verbose=verbose)   
+
+    # --- 8) 결측치 점검 ---
+    na_cols = list(df.columns[df.isna().any()]) 
+
+    if na_cols:
+        raise ValueError(f"결측치가 있는 컬럼이 있습니다: {na_cols}\n"
+                         f"데이터 품질 점검 단계에서 먼저 처리하세요.")
+    
+    # --- 9) 모델 적합 (backward=True 이면 후진소거법 수행) ---
+    fit = auto_logit(df, y=y, backward=backward, alpha=alpha, 
+                     report=False, plot=False)  
+    
+    # --- 10) 보고에 필요한 정보를 결과 객체에 붙여 반환 ---
+    fit.data_ = df # report_variables 등이 베타, VIF 계산에 사용한다
+    fit.recipe_ =recipe or {} # 신규 예측 시, apply_recipe에 그대로 넘긴다
+    fit.name_ = name # compare_models 가 채워주기도 한다 
+
+    return fit 
+                
+def compare_models(fits, metric="AUC", sub_metric="변수수", tolerance=0.05, 
+                   threshold=0.5, digits=4, report=True):
+    """
+    여러 로지스틱 모델의 분류 성능을 한 표로 정리해 좋은 순으로 정렬하고, 최고 모델을 반환한다.
+    주 지표 1위와의 격차가 tolerance 이내면 '근소 격차 그룹'으로 묶어 보조 지표로 순서를 정한다.
+
+    'my_ols.compare_models'와 같은 방식으로 동작하되, 회귀 지표(RMSE , R^2) 대신
+    분류 지표 (정확도, F1, AUC)와 모형 적합도 지표(Pseudo R^2, AIC)로 비교한다. 
+
+    Args: 
+        fits (dict) : {모델이름: 적합된 회귀분석 결과 객체} 형태의 딕셔너리 
+        metric (str) : 정릴 기준이 되는 주 성능평가지표 (기본값: 'AUC')
+        sub_metric (str) : 근소 격차 그룹 안에서 적용할 보조 지표. None이면 미사용 (기본값: '변수수') 
+        tolerance (float) : 근소 격차로 판단할 주 지표의 상대격차. 0이면 순수 크기 비교 (기본값: 0.05)
+        threshold (float): 확률을 0/1로 분류하는 임계값( 기본값: 0.05)
+        digits (int): 표에 표시할 소수점 자릿수(기본값: 4)
+        report (bool): 성능 비교표를 화면에 출력할지 여부 (기본값: True)
+
+    Returns:
+        성능이 가장 좋은 모델의 회귀분석 결고 객체(표의 첫 행). 아래 속성이 함께 붙는다. 
+        - 'name_' (str) : 모델이름. 'fits'의 키에서 채워진다
+        - 'score_table_' (DataFrame) : 모델명을 인덱스로 하는 성능 비교표
+            성능이 좋은 모델이 위에 오며, 맨 끝에 1위 대비 상대격차인 'Gap(%)' 컬럼이 붙는다.
+
+    Raises:
+        TypeError : 'fits'가 딕셔너리가 아니거나 값이 회귀분석 결과 객체가 아닌 경우
+        ValueError : 'fits'가 비었거나 지표 이름, tolerance, threshold가 유효하지 않은 경우.
+    """
+
+    # --- 1) 지표별 '성능이 좋은 방향' 정의 (True= 값이 클수록 좋음)
+    metrics = {
+        "변수수": False, # 같은 성능이라면 변수가 적은 모델이 간명하다 
+        "정확도": True, 
+        "정밀도": True,
+        "재현율": True, 
+        "F1": True, 
+        "AUC": True,
+        "Pseudo R^2": True,
+        "AIC": False,
+    }
+    # --- 2) 입력 검증 ---
+    if not isinstance(fits, dict):
+        raise TypeError(f"fits는 딕셔너리여야 합니다: {type(fits).__name__}")
+
+    if not fits:
+        raise ValueError("비교할 모델이 없습니다.")
+
+    for name, fit in fits.items():
+        if not hasattr(fit, "prsquared"):
+            raise TypeError(f"'{name}'의 값이 로지스틱 회귀분석 결과 객체가 아닙니다: "
+                            f"{type(fit).__name__}")
+
+    for m in [metric, sub_metric]:
+        if m is not None and m not in metrics:
+            raise ValueError(f"지원하지 않는 지표입니다: '{m}'"
+                             f"(사용 가능: {list(metric.keys())})") 
+
+    if tolerance < 0:
+        raise ValueError(f"tolerance는 0이상이어야 합니다: {tolerance}")
+
+    if not 0 < threshold < 1: 
+        raise ValueError(f"threshold는 0과 1 사이여야 합니다: {threshold}")
+    
+
+    # --- 3) 모델별 성능 지표 계산 ---
+    result = [] 
+
+    for name, fit in fits.items():
+        y_true = np.asarray(fit.model.endog).astype(int) # 실제 종속변수(0/1)
+        proba = np.asarray(fit.predict())   # 1이 될 확률 
+        y_pred = (proba > threshold).astype(int)    # 임계값 기준 예측 범주
+
+        result.append({
+            "모델": name, 
+            "변수수": int(fit.df_model), # 상수항을 제외한 독립변수 개수 
+            "정확도": accuracy_score(y_true, y_pred), 
+            "정밀도": precision_score(y_true, y_pred, zero_division=0),
+            "재현율": recall_score(y_true, y_pred, zero_division=0), 
+            "F1": f1_score(y_true, y_pred, zero_division=0),
+            "AUC": roc_auc_score(y_true, proba), 
+            "Pseudo R^2": fit.prsquared, 
+            "AIC": fit.aic, 
+        })
+
+    rdf = DataFrame(result).set_index("모델")
+
+    # --- 4) 1위 대비 주 지표의 상대격차 계산 ---
+    # 지표마다 좋은 방향이 다르므로 metrics에 기록해 둔 방향으로 최적값을 찾는다 
+    higher_is_better = metrics[metric]
+
+    if higher_is_better:
+        best = rdf[metric].max()
+        diff = best - rdf[metric] #클수록 좋은 지표는 1위보다 작을수록 나쁘다 
+
+    # AIC 처럼 값이 음수인 지표도 있으므로 최적값의 절댓값을 분모로 삼는다
+    # 최적값이 0이면 나눌 수 없으므로 격차를 값의 차이 그대로 본다 
+    if best != 0:
+        denominator = abs(best)
+    else:
+        denominator = 1.0 
+
+    rdf["Gap(%)"] = (diff / denominator * 100).round(2) # 양수일 수록 1위보다 나쁨
+
+    # --- 5) 근소 격차 그룹을 먼저 정렬하고 나머지를 뒤에 붙인다 ---
+    # 주 지표가 사실상 비슷한(격차가 tolerance 이내인) 모델끼리는 보조 지표로 순서를 정한다. 
+    close = rdf["Gap(%)"] <= tolerance*100 
+
+    by = [metric]
+    ascending = [not higher_is_better]
+
+    if sub_metric:
+        # 보조 지표를 앞에 두어야 근소 격차 그룹 안에서 우선 적용된다.
+        by.insert(0, sub_metric)
+        ascending.insert(0, not metrics[sub_metric])
+
+    front = rdf[close].sort_values(by=by, ascending=ascending)
+    back = rdf[~close].sort_values(by=[metric], ascending=[not higher_is_better])   
+
+    score_table = concat([front, back]).round(digits)
+
+    # --- 6) 성능표 출력 ---
+    if report:
+        display(score_table)
+
+    # 각 모델에 딕셔너리 키를 이름으로 새겨 둔다(직접 지정한 name_이 없을때만)
+    for model_name, fit in fits.items():
+        if getattr(fit, "name_", None) is None:
+            fit.name_ = model_name
+
+    # 표는 성능순으로 정렬되어 있으므로 첫 행이 곧 최고 모델이다
+    best = fits[score_table.index[0]]
+    best.score_table_ = score_table
+
+    return best
 
 
+def report_threshold(fit, thresholds=None, digits=3):
+    """
+    임계값을 바꿔가며 분류 성능이 어떻게 달라지는지 한 표로 정리한다.
 
+    임계값 0.5는 관례일 뿐이므로, 정밀도와 재현율 중 무엇이 중요한지에 따라 
+    조정한 결과를 비교해 목적에 맞는 값을 고르는데 사용한다. 
+
+    Args:
+        fit: 'fit_model' 함수로 적합된 회귀분석 결과 객체 
+        thresholds (list) : 비교할 임계값 목록 (기본값: [0.3, 0.4, 0.5, 0.6, 0.7])  
+        digits (int): 표에 표시할 소수점 자릿수 (기본값: 3) 
+        report (bool) : 비교표를 화면에 출력할지 여부 (기본값: True)
+
+    Returns:
+        DataFrame : 임계값을 인덱스로 하는 성능 비교표
+                    정확도, 정밀도, 재현율, F1과 놓친 1(FN), 잘못 잡은 0(FP) 건수를 담는다.
+
+    Raises: 
+        ValueError : 임계값 목록이 비었거나 0~1 범위를 벗어난 값이 있는 경우 
+    """
+
+    # --- 1) 입력 검증 --- 
+    if thresholds is None:
+        thresholds = [0.3, 0.4, 0.5, 0.6, 0.7]
+
+    if not len(thresholds):
+        raise ValueError("비교할 임계값이 없습니다.")
+
+    for t in thresholds:
+        if not 0 < t < 1:
+            raise ValueError(f"임계값은 0과 1 사이여야 합니다: {t}")
+        
+    # --- 2) 실제값, 예측확률 준비 ---
+    y_true = np.asarray(fit.model.endog).astype(int) # 실제 종속변수(0/1)
+    proba = np.asarray(fit.predict())   # 1이 될 확률 
+
+    # --- 3) 임계값별 성능 계산 --- 
+    rows = []
+
+    for t in thresholds:
+        y_pred = (proba > t).astype(int) # 임계값 t 로 이진화 
+        tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel() 
+
+        rows.append({
+            "임계값": t, 
+            "정확도": accuracy_score(y_true, y_pred), 
+            "정밀도": precision_score(y_true, y_pred, zero_division=0),
+            "재현율":recall_score(y_true, y_pred, zero_division=0), 
+            "F1": f1_score(y_true, y_pred, zero_division=0),
+            "놓친 1(FN)": int(fn), # 임계값을 올릴수록 늘어난다
+            "잘못 잡은 0 (FP)": int(fp), # 임계값을 내릴수록 늘어난다 
+        })
+
+    result = DataFrame(rows).set_index("임계값").round(digits)
+
+    return result
 
 
