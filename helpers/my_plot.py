@@ -108,7 +108,7 @@ def lineplot(data=None, x=None, y=None, hue=None,
              palette=None, marker=None, markersize=None, 
              markeredgewidth=None, markeredgecolor=None, 
              markerfacecolor=None, 
-             width=1280, height=540, save_path=None, ax=None):
+             width=1280, height=540, save_path=None, ax=None, **params):
     """
     선 그래프를 그린다. 
 
@@ -149,7 +149,7 @@ def lineplot(data=None, x=None, y=None, hue=None,
                 markeredgewidth=markeredgewidth, 
                 markeredgecolor=markeredgecolor,
                 markerfacecolor=markerfacecolor, 
-                ax=ax)
+                ax=ax, **params)
     # 그래프 표시 
     if fig is not None: 
         show(save_path=save_path)

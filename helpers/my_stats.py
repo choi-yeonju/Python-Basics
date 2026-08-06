@@ -2,7 +2,7 @@ import numpy as np
 from math import sqrt 
 from itertools import combinations
 from IPython.display import display
-from pandas import DataFrame, Series, melt, concat, notna, crosstab
+from pandas import DataFrame, Series, melt, concat, crosstab
 from scipy.stats import t 
 from scipy.stats import normaltest, bartlett, levene
 from scipy.stats import ttest_1samp, wilcoxon, ttest_rel, ttest_ind, mannwhitneyu
@@ -18,7 +18,6 @@ from . import my_plot
 from . import my_prep
 
 from statsmodels.formula.api import ols 
-from statsmodels.stats.anova import anova_lm
 from statsmodels import api as sm 
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.tools.tools import add_constant
@@ -61,7 +60,7 @@ def test_assumptions(data, columns=None, alpha=0.05, center="median"):
         data (DataFrame) : 검정대상이 되는 데이터프레임
         columns (list) : 검정에 사용할 컬럼명 목록 (기본값: None -> 수치형 컬럼 전체)
         alpha (float) : 유의수준 (기본값 : 0.05)
-        center (str) : : Levene 검정시 사용할 중심 경향값 (기본값: "median")
+        center (str) : Levene 검정시 사용할 중심 경향값 (기본값: "median")
 
     Returns : 
         DataFrame : field를 인덱스로 하는 검정 결과표
@@ -399,7 +398,7 @@ def anova_oneway(data, y, between, alpha=0.05):
 
     Args : 
         data (DataFrame) : 검정 대상 데이터 프레임 (long형식)
-        yy ( str ) : 종속변수(연속형) 컬럼명
+        y ( str ) : 종속변수(연속형) 컬럼명
         between (str) : 집단을 구분하는 독립변수(명목형) 컬럼명 
         alpha (float) : 유의수준 (기본값 : 0.05)
 
@@ -444,7 +443,7 @@ def anova_oneway(data, y, between, alpha=0.05):
         
     return aov
 
-# 사후검정 함수 정의
+# 사후검정 함수 정의 LAB07-7 사후검정
 def posthoc_oneway(data, y, between, alpha=0.05, plot=True,summary=True, palette=None, 
                    title=None, xlabel=None, ylabel=None, width=1280, 
                    height=640, save_path=None): 
@@ -530,7 +529,7 @@ def posthoc_oneway(data, y, between, alpha=0.05, plot=True,summary=True, palette
         annotator = Annotator(data=df, x=between, y=y, # 데이터프레임, x축, y축 변수 지정
                             pairs=pairs, # 비교할 그룹 쌍 
                             order=order, # 그룹(x축) 순서 
-                            ax=ax) # 그래프 축 \
+                            ax=ax) # 그래프 축 
         
         # 검정을 새로 수행하지 않고, 앞서 구한 p값을 그대로 주입하여 주석 표시 
         annotator.configure(text_format="star", loc="inside")
@@ -574,10 +573,10 @@ def anova_twoway(data, y, between, alpha=0.05, order=None, plot=True, palette=No
         ylabel (str) : y축 라벨 (기본값 : None이면 "평균 {y}")
         width (int) : 서브플롯 한 칸의 너비 (기본값 : 640) 
         height (int) : 서브플롯 한 칸의 높이 (기본값 : 480) 
-        save_paht (str) : 그래프 저장 경로 (기본값: None) 
+        save_path (str) : 그래프 저장 경로 (기본값: None) 
 
     Returns: 
-        DataFrmae : 이원분산분석 결과표에 설명용 컬럼을 덧붙인 결과표 
+        DataFrame : 이원분산분석 결과표에 설명용 컬럼을 덧붙인 결과표 
     """
 
     # --- 1) 분석에 사용할 컬럼만 추출하고 결측 행 제거 ---
@@ -683,7 +682,7 @@ def anova_twoway(data, y, between, alpha=0.05, order=None, plot=True, palette=No
             ax[i].set_title("{0}에 따른 {1}별 평균 {2}".format(x_field, hue_field, y), 
                             fontsize=15, pad=10)
             ax[i].set_xlabel(x_field, fontsize=12)
-            ax[i].set_ylabel(x_field, fontsize=12)
+            ax[i].set_ylabel(ylabel, fontsize=12)
         my_plot.show(save_path=save_path)
 
     return aov 
@@ -711,10 +710,10 @@ def posthoc_twoway(data, y, between, alpha=0.05, plot=True, summary=True,
         ylabel (str) : y축 라벨 (기본값 : None이면 y)
         width (int) : 그래프 너비 (기본값 : 1280) 
         height (int) : 그래프 높이 (기본값 : 640) 
-        save_paht (str) : 그래프 저장 경로 (기본값: None) 
+        save_path (str) : 그래프 저장 경로 (기본값: None) 
 
     Returns: 
-        DataFrmae : 조합(셀) 집단 쌍별 사후검정 결과표( Tukey HSD 또는 Games-Howell)
+        DataFrame : 조합(셀) 집단 쌍별 사후검정 결과표( Tukey HSD 또는 Games-Howell)
     """        
 
 
@@ -903,6 +902,7 @@ def correlation (data, x, y, alpha=0.05, plot=True, palette=None,
         "coef" : round(float(coef), 4), 
         "p-value" : round(float(p), 4), 
         "strength" : strength, 
+        "significant":bool(p<alpha), 
         "normality_x" : norm_x, 
         "normality_y" : norm_y, 
         "linearity" : linearity,
@@ -1149,7 +1149,7 @@ def chi2_goodness_of_fit(data, column, expected=None, order=None, alpha=0.05,
     pct_ok = float((exp>=5).mean())
     min_exp = float(exp.min())
     assumption = bool(pct_ok >=0.8 and min_exp >=1)
-    recommed = "Chi-square goodness-of-fit" if assumption else "category merge"
+    recommend = "Chi-square goodness-of-fit" if assumption else "category merge"
 
     # --- 4) 적합도 검정 수행 ---
     # 카이제곱 적합도 검정 ( 관측빈도 vs 기대빈도 )
@@ -1162,7 +1162,7 @@ def chi2_goodness_of_fit(data, column, expected=None, order=None, alpha=0.05,
     # 효과크기 강도 레벨 
     # --> (Cohen 관례 : 0.1 이하 미미 / 0.3 이하 약함 / 0.5 이하 보통 / 그 이상 강함)
     if w < 0.1:
-        strangth = "Negligible"
+        strength = "Negligible"
     elif w < 0.3:
         strength = "Weak"
     elif w < 0.5:
@@ -1248,7 +1248,7 @@ def _chi2_crosstab(data, row, col, kind, alpha=0.05, plot=True, palette=None, or
     # --- 4) 강도 확인 ---
     # 효과크기 : 크라메르 V (피셔로 분기해도 chi2 기반 참고치를 함께 제공)
     n = int(ct.values.sum())
-    min_dim = min(ct.shape)
+    min_dim = min(ct.shape) -1
     cramers_v = float(np.sqrt(chi2/ (n*min_dim))) if min_dim >0 else np.nan 
 
     # 효과크기 강도 라벨 (Cohen 관례 : 0.1 이하 미미 / 0.3 이하 약함 / 0.5 이하 보통/ 그 이상 강함)
@@ -1309,10 +1309,10 @@ def chi2_homogeneity(data, group, category, alpha=0.05,
     """
     동질성 검정을 가정확인부터 강도까지 일괄수행하는 함수 
 
-        _chi2_crosstab()를 호줄하여, 두 범주형 변수의 동질성 검정을 수행한다.
+        _chi2_crosstab()를 호출하여, 두 범주형 변수의 동질성 검정을 수행한다.
 
     """
-    return _chi2_crosstab(data, group, category, "homogenety", alpha, 
+    return _chi2_crosstab(data, group, category, "homogeneity", alpha, 
                           plot=plot, palette=palette, orient=orient, 
                           title=title, xlabel=xlabel, ylabel=ylabel, 
                           width=width, height=height, save_path=save_path)
