@@ -89,7 +89,7 @@ def plot_sigmoid(fit, data, x, threshold=0.5, palette=None, title=None,
         ylabel (str) : y축 레이블 (기본값: None -> "P(종속변수=1)")
         width (int) : 캔버스 가로 픽셀 (기본값:1280)
         height (int) : 캔버스 세로 픽셀 (기본값:640)
-        save_path (int) : 이미지 저장 경로(기본값: None)
+        save_path (str) : 이미지 저장 경로(기본값: None)
     """
     # --- 1) 그릴 종속변수 결정 ---
     yname = fit.model.endog_names 
@@ -179,7 +179,7 @@ def report_fitness(fit):
 
     # --- 4) 문장 템플릿 구성 ---
     template = (
-        "**Note. n={n}."
+        "**Note. n = {n}. "
         "LL = {llf}, LL-Null = {llnull}, "
         "LLR x^2 ({df_model}) = {llr}, p {alpha}, "
         "Pseudo R^2 = {prsq}**\n\n"
@@ -212,7 +212,7 @@ def report_variables(fit, data):
     적합된 로지스틱 모델의 독립변수별 회귀계수, 오즈비 보고표를 데이터 프레임으로 생성해 반환한다.
      
     오즈비와 그 95% 신뢰구간을 함께 제공한다.
-    다중공선성 점검을 위한 VIF 계산에 우너본 데이터가 필요하므로 'data'를 함께 받는다. 
+    다중공선성 점검을 위한 VIF 계산에 원본 데이터가 필요하므로 'data'를 함께 받는다. 
 
     Args:
         fit : 'fit_model' 함수로 적합된 회귀분석 결과 객체 
@@ -297,9 +297,9 @@ def report_variables_text(fit, data=None, alpha=0.05):
 
     # --- 2) 문장 템플릿 구성 (독립변수 마다 반복 적용) ---
     line_template = (
-        "- **{x}**의 회귀계수는 **B = {B}**, 오즈비는 **OR={OR}**로 나타났으며, "
+        "- **{x}**의 회귀계수는 **B = {B}**, 오즈비는 **OR = {OR}**로 나타났으며, "
         "이는 **{y}**에 {sig} 요인임을 의미한다"
-        "(**z = {z}**, **{p}**)"
+        "(**z = {z}**, **{p}**) "
         "즉, {change} {y}가 1(사건 발생)이 될 오즈는 평균적으로 약 **{pct}% {direction}** 하는 것으로 해석된다."
     )
     # --- 3) 독립변수별 해석 문장 생성 ---
@@ -336,7 +336,7 @@ def report_variables_text(fit, data=None, alpha=0.05):
     report = "\n".join(lines)
     report += (
         "\n\n> 오즈비(OR)가 1보다 크면 사건 발생 오즈가 증가, 1보다 작으면 감소함을 뜻한다 "
-        "유의확률이 유의수준보다 큰(=유의하지 않은) 변수는 효과가 통계적으로 확인되지 않았으므로"
+        "유의확률이 유의수준보다 큰(=유의하지 않은) 변수는 효과가 통계적으로 확인되지 않았으므로 " 
         "오즈비 해석에 주의한다. 더미변수의 오즈비는 '기준(drop_first로 제외된)범주' 대비 값이다"
     )
 
@@ -496,7 +496,7 @@ def plot_confusion(fit, threshold=0.5, palette=None, title=None,
     # ax를 넘겨받으면 서브플롯의 한 칸에 그리고, 없으면 단독 캔버스를 만든다.
     fig = None
     if ax is None:
-        fit, ax = my_plot.init(width=size, height=size)
+        fig, ax = my_plot.init(width=size, height=size)
 
     ax.set_title(title if title else "혼동행렬(Confusion Matrix)", 
                  fontsize=24, fontweight=500, pad=15)
@@ -568,7 +568,7 @@ def report_performance(fit, threshold=0.5, plot=True, palette=None,
     Args:
         fit : 'fit_model' 함수로 적합된 회귀분석 결과 객체
         threshold (float) : 확률을 0/1로 분류하는 임계값( 기본값: 0.5)
-        plot (bool): 혼동행렬 히트맵과 ROC Curve를 함께 그릴지 여부(기본값: None)
+        plot (bool): 혼동행렬 히트맵과 ROC Curve를 함께 그릴지 여부(기본값: True)
         palette (str) : 그래프 색상에 사용할 팔레트 이름( 기본값:None)
         size (int) : 서브플롯 한 칸에 한 변 픽셀 크기 (기본값: 640)
         save_path (str) : 이미지 저장 경로 (기본값 : None) 
@@ -607,7 +607,7 @@ def report_performance(fit, threshold=0.5, plot=True, palette=None,
         dor = np.inf
 
     # --- 4) 평가표 구성
-    metric = DataFrame([{
+    metrics = DataFrame([{
         "정확도(Accuracy)": accuracy_score(y_true, y_pred),
         "정밀도(Precision)": precision_score(y_true, y_pred, zero_division=0),
         "재현율(Recall, TPR)": recall_score(y_true, y_pred, zero_division=0), 
@@ -617,7 +617,7 @@ def report_performance(fit, threshold=0.5, plot=True, palette=None,
         "AUC": auc, 
         "AUC 판단": auc_grade, 
         "진단오즈비(DOR)":dor, 
-    }], index=["preformance"])
+    }], index=["performance"])
 
     # --- 5) 혼동행렬
     cmdf = DataFrame(cm, 
@@ -626,7 +626,7 @@ def report_performance(fit, threshold=0.5, plot=True, palette=None,
      
     # --- 6) 결과 출력 
     display(cmdf)
-    display(metric)
+    display(metrics)
 
     # --- 7) 시각화 : 혼동행렬 히트맵 + ROC Curve 를 1행 2열로 나란히 배치 
     if plot:
@@ -648,8 +648,8 @@ def test_linear(fit=None, data=None, yname=None, xnames=None, targets=None, alph
         fit: 'fit_model' 함수로 적합된 회귀분석 결과 객체
         data : 회귀분석에 사용한 원본 데이터 프레임. 독립변수와 종속변수 모두 포함해야 한다
         yname (str) : 종속변수 컬럼명
-        xname (list) : 모델에 투입된 독립변수 이름 목록 
-        targets (list) : 검정할 변수 목록. None이면 'xname' 중 연속형 전체 (기본값: None)
+        xnames (list) : 모델에 투입된 독립변수 이름 목록 
+        targets (list) : 검정할 변수 목록. None이면 'xnames' 중 연속형 전체 (기본값: None)
         alpha (float): 유의수준 (기본값: 0.05)
     """
     # --- 1) 검정 대상 결정 ( 상수항 제외, 연속형만 )
@@ -732,7 +732,7 @@ def fix_linear(data, y, alpha=0.05, allow_shifted_log=False, max_rounds=None, re
 
     Raises:
         KeyError : 종속변수 컬럼이 'data'에 없는 경우 
-        ValueError : alpha, max_roundss 가 유효하지 않은 경우
+        ValueError : alpha, max_rounds 가 유효하지 않은 경우
     """
     # --- 1) 입력 검증 --- 
     if y not in data.columns:
@@ -897,16 +897,16 @@ def fix_linear(data, y, alpha=0.05, allow_shifted_log=False, max_rounds=None, re
                 print(f"미해소 변수 : {unresolved}\n"
                       f"제곱항, 로그변환으로 담기지 않는 형태이므로"
                       f"구간화나 스플라인이 필요하다는 신호입니다. 한계점으로 보고하세요.")
-    fit.data = tmp
-    fit.recipe = recipe
-    fit.history = history_df
+    fit.data_ = tmp
+    fit.recipe_ = recipe
+    fit.history_ = history_df
     fit.unresolved_ = unresolved
 
     return fit   
 
 def test_independent(fit):
     """
-    Dubin-Watson으로 잔차의 독립성을 검증한다. 
+    Durbin-Watson으로 잔차의 독립성을 검증한다. 
 
     로지스틱 회귀는 잔차가 0/1 구조라 일반 잔차를 쓸 수 없으므로 **피어슨 잔차**를 사용한다.
     본래 시계열 전용 검정이므로, 시간 순서가 없는 데이터에서는 통계량이 정상이어도
@@ -1023,7 +1023,8 @@ def fit_pipeline(data, y, columns=None, *,
         vif_threshold (float) : VIF 임계값 (기본값: 10.0)
         scale (bool) : 정규화 수행 여부 (기본값: False)
         scale_method (str) : 사용할 스케일러 이름 (기본값: 'standard')
-        backward (bool) : 후진소거법의 변수 제거 기준 유의수준 (기본값: 0.05)
+        backward (bool) : 후진소거법 수행 여부 (기본값: False)
+        alpha (float) : 후진소거법의 변수 제거 기준 유의수준 (기본값: 0.05)
         name (str) : 모델을 구분할 이름. 결과 객체의 'name_'속성이 된다. (기본값: None)
         verbose (bool) : 단계별 전처리 내역 출력 여부 (기본값: False)
     
@@ -1118,10 +1119,10 @@ def compare_models(fits, metric="AUC", sub_metric="변수수", tolerance=0.05,
 
     Args: 
         fits (dict) : {모델이름: 적합된 회귀분석 결과 객체} 형태의 딕셔너리 
-        metric (str) : 정릴 기준이 되는 주 성능평가지표 (기본값: 'AUC')
+        metric (str) : 정렬 기준이 되는 주 성능평가지표 (기본값: 'AUC')
         sub_metric (str) : 근소 격차 그룹 안에서 적용할 보조 지표. None이면 미사용 (기본값: '변수수') 
         tolerance (float) : 근소 격차로 판단할 주 지표의 상대격차. 0이면 순수 크기 비교 (기본값: 0.05)
-        threshold (float): 확률을 0/1로 분류하는 임계값( 기본값: 0.05)
+        threshold (float): 확률을 0/1로 분류하는 임계값( 기본값: 0.5)
         digits (int): 표에 표시할 소수점 자릿수(기본값: 4)
         report (bool): 성능 비교표를 화면에 출력할지 여부 (기본값: True)
 
@@ -1161,8 +1162,8 @@ def compare_models(fits, metric="AUC", sub_metric="변수수", tolerance=0.05,
 
     for m in [metric, sub_metric]:
         if m is not None and m not in metrics:
-            raise ValueError(f"지원하지 않는 지표입니다: '{m}'"
-                             f"(사용 가능: {list(metric.keys())})") 
+            raise ValueError(f"지원하지 않는 지표입니다: '{m}' "
+                             f"(사용 가능: {list(metrics.keys())})") 
 
     if tolerance < 0:
         raise ValueError(f"tolerance는 0이상이어야 합니다: {tolerance}")
@@ -1200,6 +1201,9 @@ def compare_models(fits, metric="AUC", sub_metric="변수수", tolerance=0.05,
     if higher_is_better:
         best = rdf[metric].max()
         diff = best - rdf[metric] #클수록 좋은 지표는 1위보다 작을수록 나쁘다 
+    else:
+        best = rdf[metric].min()
+        diff = rdf[metric] - best #작을수록 좋은 지표는 1위보다 클수록 나쁘다
 
     # AIC 처럼 값이 음수인 지표도 있으므로 최적값의 절댓값을 분모로 삼는다
     # 최적값이 0이면 나눌 수 없으므로 격차를 값의 차이 그대로 본다 
