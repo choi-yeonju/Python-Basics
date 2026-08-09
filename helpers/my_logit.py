@@ -186,7 +186,7 @@ def report_fitness(fit):
         "{Y}를 종속변수로, {X}(을)를 독립변수로 한 이항 로지스틱 회귀분석 결과, "
         "모형은 통계적으로 {result}.\n\n"
         "> LLR x^2 ({df_model})={llr}, p {alpha}, Pseudo R^2 = {prsq}.\n\n"
-        "즉, 모형의 유사결정계수는 {prsq}로 {fit_level}적합 수준을 보였다.\n\n"
+        "즉, 모형의 유사결정계수는 {prsq}로 {fit_level} 적합 수준을 보였다.\n\n"
         "> Pseudo R^2는 선형회귀의 R^2처럼 '분산 설명 비율'로 해석하지 않는다. "
         "일반적으로 **0.2~0.4** 구간이면 매우 우수한 적합으로 본다"
     )
@@ -447,7 +447,7 @@ def auto_logit(data, y, report=True, plot=True, threshold=0.5,
 
     # --- 2) 모형 적합도 및 독립변수 보고 ---
     if report :
-        display(Markdown("#### -> 모형적합도"))
+        display(Markdown("#### -> 모형 적합도"))
 
         # 모형 적합도 해설 
         display(Markdown(report_fitness(fit)))
