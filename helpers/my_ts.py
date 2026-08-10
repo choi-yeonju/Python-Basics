@@ -524,4 +524,255 @@ def compare_smoothing(data, sizes, column=None, method="ma", overlay=False,
     return result_df
 
 
+def decompose(data, period, column=None, model=None, plot=True, title=None, 
+              rows=2, cols=2, width=960, height=480, save_path=None):
+    """시계열을 추세, 계절, 잔차 세 성분으로 분해한다. 
+    
+    분해는 차분하기 전의 원본으로 수행한다. 차분은 추세와 계절성을 지우는 작업인데
+    분해는 그 추세와 계절성을 보려는 것이기 때문이다. 
+
+    Args: 
+        data (DataFrame | Series): 날짜 인덱스를 가진 시계열 데이터 
+        period (int): 계절주기 
+        column (str): data가 데이터 프레임인 경우 대상 컬럼명 (기본값: None)
+        model (str): "additive" 또는 "multiplicative". None이면 자동 판정 (기본값: None)
+        plot (bool): 성분별 그래프를 그릴지 여부 (기본값 : True)
+        title (str): 그래프 제목 (기본값: None)
+        rows (int): 격자 행 수 (기본값: 2)
+        cols (int): 격자 열 수 ( 기본값:2)
+        width (int): 캔버스 가로 픽셀 (기본값: 960)
+        height (int): 한 단의 세로 픽셀 (기본값: 480)
+        save_path (str): 이미지 저장 경로 (기본값: None)
+
+    Returns:
+        DataFrame : 원본, 추세, 계절, 잔차 네 성분
+    """
+    # --- 1) 결합 방식 자동 판정 ---
+    if column is not None:
+        data = data[column]
+
+    # 주기 단위로 묶어, 표준편차보다 변동계수가 더 일정하면 승법으로 본다 
+    if model is None: 
+        block = np.arange(len(data)) // period # 주기 단위로 묶어 블록 번호를 만든다. 
+        block_std = data.groupby(block).std() # 각 블록별 표준편차 
+        block_mean = data.groupby(block).mean() # 각 블록별 평균
+        block_cv = block_std / block_mean # 각 블록별 변동계수 
+
+        # 변동계수가 일정하면 승법, 그렇지 않으면 가법 
+        if (block_cv.max() / block_cv.min()) < (block_std.max()/ block_std.min()):
+            model = "multiplicative" # 변동계수가 일정 -> 승법 
+        else: 
+            model = "additive" # 변동계수가 일정하지 않음 -> 가법
+
+        print(f"결합 방식 자동 판정: {model}")
+    else: 
+        print(f"결합 방식 지정: {model}")
+
+    # --- 2) 분해 수행 ---
+    result = seasonal_decompose(data, model=model, period=period)
+
+    result_df = DataFrame({
+        "원본": result.observed,
+        "추세": result.trend, 
+        "계절": result.seasonal, 
+        "잔차": result.resid,
+    })
+
+    print(f"관측치 {len(result_df)}개 중 추세, 잔차가 계산된 구간 {len(result_df.dropna())}개")
+
+    # --- 3) 성분별로 한 단씩 그리기 ---
+    if plot: 
+        # --- 3-1) 그래프 초기화 ---
+        if title is None: 
+            title = f"시계열 분해 ({model}, period={period})"
+
+        fig, ax = my_plot.init(rows=2, cols=2, width=width, height=height, title=title)
+
+
+        # --- 3-2) 각 성분별 시각화 ---
+        for i, col in enumerate(result_df.columns):
+            if col == "잔차":
+                # 잔차는 불규칙하므로 점으로 그려야 남은 패턴이 보인다 
+                my_plot.scatterplot(data=None, x=result_df.index, y=result_df[col], 
+                                    size=8, linewidth=0.5, ax=ax[i])
+            else:
+                my_plot.lineplot(x=result_df.index, y=result_df[col], ax=ax[i]) 
+
+            ax[i].set_title(col)
+            ax[i].set_ylabel("")    
+
+        # --- 3-3) 잔차 기준선 그리기 ---
+        # 잔차의 기준선은 승법이면 1, 가법이면 0이다. 
+        base = 1 if model == "multiplicative" else 0
+
+        # 잔차 그래프에 기준선 그리기 
+        ax[3].axhline(base, color="red", linestyle="--", linewidth=1)
+
+        # --- 3-4) 그래프 출력 ---
+        my_plot.show(save_path=save_path)
+    
+    # 결과 반환 
+    return result_df
+
+def report_seasonal(data, period, column=None, model=None, plot=True, 
+                    title=None, xlabel=None, ylabel=None, 
+                    width=1000, height=400, save_path=None):
+    """계절 성분을 주기 안의 위치별로 정리해 계절지수표를 만든다. 
+
+    승법 모델의 계절지수는 배수로 읽는다. 1.227은 추세선보다 22.7% 높다는 뜻이다. 
+
+    Args: 
+        data (DataFrame | Series): 날짜 인덱스를 가진 시계열 데이터 
+        period (int): 계절 주기 
+        column (str): data가 데이터프레임인 경우 대상 컬럼명 (기본값: None)
+        model (str): "additive" 또는 "multiplicative". None이면 자동 판정 (기본값: None)
+        plot (bool): 계절지수 그래프를 그릴지 여부 (기본값: True)
+        title (str): 그래프 제목 (기본값: None)
+        xlabel (str): x축 레이블 (기본값: None)
+        ylabel (str): y축 레이블 (기본값: None)
+        width (int): 캔버스 가로 픽셀 (기본값: 1000)
+        height (int): 캔버스 세로 픽셀 ( 기본값: 400)
+        save_path (str): 이미지 저장 경로 (기본값: None)
+    
+    Returns: 
+        DataFrame: 주기 내 위치 (1~period)를 인덱스로 하는 계절지수표 
+    """
+
+    # --- 1) 결합 방식 자동 판정 --- 
+    if column is not None: 
+        data = data[column]
+
+    if model is None:   # 사용할 모델이 지정되지 않았다면 
+        block = np.arange(len(data)) // period # 주기 단위로 묶어 블록 번호를 만든다
+        block_std = data.groupby(block).std() # 각 블록별 표준편차 
+        block_mean = data.groupby(block).mean() # 각 블록별 평균
+        block_cv = block_std / block_mean # 각 블록별 변동계수 
+
+        # 변동계수가 일정하면 승법, 그렇지 않으면 가법 
+        if (block_cv.max() / block_cv.min()) < (block_std.max()/ block_std.min()):
+            model = "multiplicative"
+        else:
+            model = "additive"
+
+    # --- 2) 분해 후 계절 성분만 사용 ---
+    # 분해 시계열 생성 
+    result = seasonal_decompose(data, model=model, period=period)
+
+    # 계절 성분만 추출 
+    season = result.seasonal
+
+    # 계절 성분은 매 주기 똑같이 반복되므로 한 주기만 보면 전체를 알 수 있다. 
+    # 위치는 데이터 시작 시점을 1로 하여 주기 안에서 센다. 
+    position = np.arange(len(season)) % period + 1
+    index = season.groupby(position).first()
+
+    result_df = DataFrame({"계절지수": index.round(4), 
+                           "평균": index.mean().round(4)})
+    result_df.index.name = "주기 내 위치"
+
+    # --- 3) 기준 대비 크기 ---
+    # 승법은 1이 기준이므로 백분율로, 가법은 0이 기준이므로 절대값으로 읽는다. 
+    if model == "multiplicative":
+        base = 1 
+        result_df["기준 대비(%)"] = ((index -1) * 100).round(1)
+    else: 
+        base = 0 
+        result_df["기준 대비"] = index.round(3)
+
+    print(f"결합 방식: {model}")
+    print(f"최고 위치: {index.idxmax()} ({index.max():.4f})")
+    print(f"최저 위치: {index.idxmin()} ({index.min():.4f})")
+
+    # --- 4) 그래프 그리기 --- 
+    if plot: 
+        if title is None: 
+            title = f"주기 내 위치별 계절지수 ({model}, period={period})"
+
+            fig, ax = my_plot.init(width=width, height=height, title=title, 
+                                   xlabel=xlabel, ylabel=ylabel)
+
+            my_plot.lineplot(x=index.index, y=index.values, marker="o", ax=ax)
+            ax.axhline(base, color="red", linestyle="--", linewidth=1)
+
+            my_plot.show(save_path=save_path)
+
+        # 결과 반환 
+        return result_df 
+
+def adjust_seasonal(data, period, column=None, model=None, plot=True, title=None, 
+                    xlabel=None, ylabel=None, width=1280, height=480, save_path=None):
+    """원본에서 계절 성분을 걷어내 계절조정 시계열을 만든다. 
+
+    계절조정 결과에서 갑자기 튀는 지점은 계절성으로 설명되지 않는 사건이 있었다는 뜻이다. 
+
+    Args: 
+        data (DataFrame | Series): 날짜 인덱스를 가진 시계열 데이터 
+        period (int): 계절주기 
+        column (str): data가 데이터프레임인 경우 대상 컬럼명 (기본값: None)
+        model (str): "additive" 또는 "multiplicative". None이면 자동 판정 (기본값: None)
+        plot (bool): 원본과 겹쳐 그릴지 여부 (기본값: True)
+        title (str): 그래프 제목 (기본값: None)
+        xlabel (str): x축 레이블 (기본값: None)
+        ylabel (str): y축 레이블 (기본값: None)
+        width (int): 캔버스 가로 픽셀 (기본값: 1280)
+        height (int): 캔버스 세로 픽셀 (기본값: 480)
+        save_path (str): 이미지 저장 경로 (기본값: None)
+
+    Returns: 
+        Series: 계절 요인이 제거된 시계열 
+    """
+    # --- 1) 결합 방식 자동 판정 --- 
+    if column is not None: 
+        data = data[column]
+
+    if model is None: # 사용할 모델이 지정되지 않았다면 ?
+        block = np.arange(len(data)) // period # 주기 단위로 묶어 블록 번호를 만든다
+        block_std = data.groupby(block).std() # 각 블록별 표준편차 
+        block_mean = data.groupby(block).mean() # 각 블록별 평균
+        block_cv = block_std / block_mean # 각 블록별 변동계수 
+
+        # 변동계수가 일정하면 승법, 그렇지 않으면 가법 
+        if (block_cv.max() / block_cv.min()) < (block_std.max() / block_std.min()): 
+            model = "multiplicative"
+        else: 
+            model = "additive"
+
+    # --- 2) 계졀 성분 제거 --- 
+    result = seasonal_decompose(data, model=model, period=period)
+
+    # 승법이면 나누고, 가법이면 뺀다
+    if model == "multiplicative":
+        adjusted = result.observed / result.seasonal
+        print(f"결합방식: {model} (원본 / 계절)")
+    else: 
+        adjusted = result.observed - result.seasonal
+        print(f"결합방식: {model} (원본 - 계절)")   
+
+    # --- 3) 그래프 그리기 ---
+    if plot: 
+        if title is None: 
+            title = f"원본 vs 계절조정 ({model}, period={period})"
+
+        fig, ax = my_plot.init(width=width, height=height, title=title,
+                                xlabel=xlabel, ylabel=ylabel)
+
+        my_plot.lineplot(x=data.index, y=data, label="원본", ax=ax)
+        my_plot.lineplot(x=adjusted.index, y=adjusted, label = "계절조정", ax=ax)
+
+        ax.legend()
+        my_plot.show(save_path=save_path)
+
+    # 결과반환 
+    return adjusted
+
+def auto_correlation(data, column=None, period=None, plot=True, 
+                     rows=2, cols=1, width=1280, height=380, 
+                     title=None, save_path=None):
+    """ACF와 PACF를 한번에 계산해 유의성과 차수 후보 (p, q)를 판정한다. 
+
+    Args: 
+        data (DataFrame | Series): 정상성을 만족하는 시계열 데이터 
+        
+    
+    """
 
