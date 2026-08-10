@@ -19,7 +19,7 @@ from . import my_logit
 
 def fit_model(data, y, summary=False):
     """
-    statmodels의 OLS를 이요해 선형회귀 모델을 적합한다.
+    statmodels의 OLS를 이용해 선형회귀 모델을 적합한다.
 
     종속변수 'y'를 제외한 나머지 모든 컬럼을 독립변수로 사용하며,
     절편(상수항)을 자동으로 추가한 뒤 최소자승법으로 회귀계수를 추정한다.
@@ -87,7 +87,7 @@ def test_linear(fit, alpha=0.05, plot=True, palette=None, title=None,
         xlabel (str) : x축 라벨 (기본값: None -> "적합값(예측값)")
         ylabel (str) : y축 라벨 (기본값: None -> "잔차(residual)")
         width (int) : 그래프 너비 (기본값: 1280) 
-        heigth (int) : 그래프 높이 (기본값: 640)
+        height (int) : 그래프 높이 (기본값: 640)
         save_path (str) : 그래프 저장 경로 (기본값: None)  
     """
     # --- 1) Ramsey RESET 검정 (고차항 power=2, F검정) --- 
@@ -155,7 +155,7 @@ def test_normal(fit, alpha=0.05, plot=True, palette=None, width=1280, height=640
         method = "Shapiro-Wilk" # 표본수가 30미만이면 Shapiro-Wilk 검정 사용 
         s, p = shapiro(resid)   # Shapiro-Wilk 검정 통계량 및 p값
     else: 
-        method = "kolmogorov-Smirnov"   # 표본수가 30이상이면 Kolmogorov-Smirnov 검정 사용
+        method = "Kolmogorov-Smirnov"   # 표본수가 30이상이면 Kolmogorov-Smirnov 검정 사용
         # 표본 평균, 표준편차로 표준화한 뒤 표준정규분포(N(0,1))와 비교 
         # (kstest에 loc/scale을 넘기는 방식은 
         # scipy 버전에 따라 오류가 발생하므로 표준화 방식으로 동일한 검정 수행 )
@@ -515,8 +515,9 @@ def report_variables(fit, data, hc3=False):
             row = {
                             "종속변수": yname, # 종속변수 이름 
                             "독립변수": x,      # 독립변수 이름 
-                            "B": fit.params[x], # 비편차 / 종속변수 표준편차)
+                            "B": fit.params[x], # 비표준화 회귀계수 (B)
                             "표준오차": fit.bse[x], # 계수 표준오차
+                            # 표준화 회귀계수(베타) = B x (독립변수 표준편차 / 종속변수 표준편차)
                             "베타" : beta, # 표준화 회귀계수(베타)
                             "t" : fit.tvalues[x],       # t-통계량표준화 회귀계수(B)
                             "유의확률" : fit.pvalues[x], # 계수 유의확률
@@ -850,7 +851,7 @@ def plot_beta(fit, data, palette=None, title=None, xlabel=None, ylabel=None,
 
 def fit_pipeline(data, y, nominal_cols=None, *  , 
                 # --- 1) 명목형 라벨링 (문자열 -> 정수) --- 
-                labelling=True, # 명목형 라벨링 수행 여부 
+                labeling=True, # 명목형 라벨링 수행 여부 
                 # --- 2) 더미변수 인코딩 --- 
                 encode = True, # 더미변수 인코딩 수행 여부 
                 # --- 3) 로그 변환 (대상은 왜도, 첨도로 자동 선정) ---
@@ -878,7 +879,7 @@ def fit_pipeline(data, y, nominal_cols=None, *  ,
         y (str) : 종속변수로 사용할 컬럼명
         nominal_cols (list) : 명목형 컬럼명 리스트. None이면 타입 자동 선택 (기본값: None)
         labeling (bool) : 명목형 라벨링(문자열 -> 정수) 수행 여부 (기본값 : True)
-        encoed (bool) : 더미변수 인코딩 수행 여부 (기본값: True)
+        encode (bool) : 더미변수 인코딩 수행 여부 (기본값: True)
         log (bool) : 로그 변환 수행 여부. 대상은 왜도, 첨도로 자동 선정한다. (기본값 : False)
         outlier (bool) : 이상치를 IQR 경계값으로 대체할지 여부 (기본값 : False)
         vif (bool) : 다중공선성 제거 수행 여부 (기본값: False) 
@@ -954,7 +955,7 @@ def fit_pipeline(data, y, nominal_cols=None, *  ,
         print(f'연속형: {continuous}')
 
     # --- 6) 명목형 라벨링 ---
-    if labelling and nominal_cols:
+    if labeling and nominal_cols:
         if verbose: 
             print('\n명목형 라벨링')    
 
@@ -1296,7 +1297,7 @@ def report_model(fit, title=True, plot=True):
     적합된 회귀모델의 성능보고와 가정 검정을 한번에 출력한다.
 
     'fit_pipeline' , 'auto_ols'가 
-    결과 객체에 붙여 둔 정보('log1p_y', 'log1p_x_x', 'use_hc3_', 'data_')를 사용하므로, 
+    결과 객체에 붙여 둔 정보('log1p_y_', 'log1p_x_', 'use_hc3_', 'data_')를 사용하므로, 
     이 값들을 따로 준비해 넘길 필요가 없다.
 
     출력 구성 (마크다운 제목 포함):
@@ -1309,7 +1310,7 @@ def report_model(fit, title=True, plot=True):
 
     Args:
         fit : 'fit_pipeline' 또는 'auto_ols'로 적합된 회귀분석 결과 객체 
-            'log1p_y', 'log1p_x', 'use_hc3', 'data_'속성이 붙어 있어야 한다. 
+            'log1p_y_', 'log1p_x_', 'use_hc3_', 'data_'속성이 붙어 있어야 한다. 
         title (bool) : 모델 이름('name_')이 있으면 맨 위에 2수준 제목으로 출력할지 여부 (기본값 : True)
     
     Raises :
@@ -1334,8 +1335,8 @@ def report_model(fit, title=True, plot=True):
     hc3 = fit.use_hc3_
 
     # 순수 log와 반사 변환 정보. 이 속성이 없는 예전 결과 객체도 그대로 동작하도록 기본값을 둔다.
-    log_y = getattr(fit, 'log_y', False)
-    log_x = getattr(fit, 'log_x', [])   
+    log_y = getattr(fit, 'log_y_', False)
+    log_x = getattr(fit, 'log_x_', [])   
     reflect_y = getattr(fit, 'reflect_y_', False)
     reflect_x = getattr(fit, 'reflect_x_', [])  
 
