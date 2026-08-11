@@ -1,13 +1,28 @@
+import warnings
 import numpy as np
+from itertools import product
+from IPython.display import display 
 from pandas import DataFrame, Series, Grouper, concat, to_datetime
 
 # 정상성 검정, 자기상관 계수 계산 
 from statsmodels.tsa.stattools import adfuller
 
+# SARIMA 모형 적합, 예측 
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+
 # 시계열 분해 
 from statsmodels.tsa.seasonal import seasonal_decompose
 
 from helpers import *
+
+# 자기상관 그래프 
+from statsmodels.tsa.stattools import acf, pacf
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+
+# 잔차 진단 (무상관)
+from statsmodels.stats.diagnostic import acorr_ljungbox
+
+from . import my_plot
 
 
 # 26.08.07
@@ -772,7 +787,557 @@ def auto_correlation(data, column=None, period=None, plot=True,
 
     Args: 
         data (DataFrame | Series): 정상성을 만족하는 시계열 데이터 
-        
+        column (str): data가 데이터프레임인 경우 대상 컬럼명 (기본값: None)
+        period (int): 계절 주기. None이면 계절성분을 판정하지 않음 (기본값: None)
+        plot (bool): ACF, PACF 그래프를 그릴지 여부 (기본값: True)
+        rows (int): 그래프 격자의 행 수 (기본값: 2)
+        cols (int): 그래프 격자 열 수 ( 기본값: 1)
+        width (int): 캔버스 가로 픽셀 (기본값: 1280)
+        height (int): 한 칸의 세로 픽셀 (기본값: 380)
+        title (str): 그래프 제목 (기본값: None)
+        save_path (str): 이미지 저장 경로 (기본값: None)
     
+    Returns: 
+        DataFrame: log별 acf, pacf, 유의성과 p, q 위치 표시 
+            p와 q 중 뒤쪽 lag 까지만 잘라서 반환한다
     """
+    # --- 1) 대상 추출 ---
+    if column is not None : 
+        data = data[column]
 
+    data = data.dropna() 
+    n = len(data)
+
+    # --- 2) 최대 시차 결정 --- 
+    # 상한 : 뒤쪽 시차일 수록 계산에 쓰이는 쌍이 줄어 추정이 불안정해진다. 
+    limit = n // 4
+
+    if period is None: 
+        lags = min(int(10 * np.log10(n)), limit) # statsmodels 기본값
+    else:
+        # 계절 주기의 3배를 노리되, 판정에 꼭 필요한 2배는 상한보다 우선한다.
+        lags = max(min(3* period, limit), 2 * period)
+
+    # --- 3) 계수 계산 (lag 0은 자기 자신이므로 제외) --- 
+    acf_values = acf(data, nlags=lags)[1:] 
+    pacf_values = pacf(data, nlags=lags)[1:]
+
+    # 유의성 기준값: 2 / sqrt(N). 관측치가 많을수록 작아진다
+    threshold = 2 / np.sqrt(n)  
+
+    # --- 4) 결과표 구성 ---
+    result_df = DataFrame({
+        "lag": range(1, lags+1), 
+        "acf": acf_values.round(3), 
+        "acf 유의성": np.abs(acf_values) > threshold,
+        "pacf": pacf_values.round(3), 
+        "pacf 유의성": np.abs(pacf_values) > threshold,
+        "기준값": round(threshold, 3), 
+    }).set_index("lag")
+
+    # --- 5) 차수 판정용 내부 함수 정의 --- 
+    # 절단 지점은 "앞에서부터 유의하던 것이 처음으로 끊기는" 자리다.
+    # 그 직전까지 연속으로 유의한 개수가 곧 차수가 된다. 
+    # 고립되어 튀어나온 유의성은 우연일 뿐이므로 차수로 세지 않는다.
+    def __cut_off(significant):
+        order = 0
+
+        for sig in significant:
+            if not sig: # 비유의를 만나는 순간이 절단 지점
+                break
+
+            order += 1 # 여기까지는 연속으로 유의했다. 
+
+        return order
+    
+    # --- 6) 차수 판정 ---
+    # 비계절 차수: 이웃한 시차(1,2,3,...)를 순서대로 본다
+    # ACF의 절단 -> MA 차수(q), PACF의 절단 -> AR 차수(p)
+    q = __cut_off(result_df["acf 유의성"])
+    p = __cut_off(result_df["pacf 유의성"])
+
+    # 계절 차수 : 주기의 배수 (period, 2*period...)만 골라 같은 규칙을 적용한다
+    # 세는 단위가 1시차에서 1주기로 바뀔 뿐이다 
+    season_lags = list(range(period, lags+1, period)) if period else []
+
+    Q = __cut_off(result_df.loc[season_lags, "acf 유의성"]) if season_lags else 0
+    P = __cut_off(result_df.loc[season_lags, "pacf 유의성"]) if season_lags else 0
+    
+    # --- 7) 차수 위치 표시 ---
+    result_df["p"] = np.where(result_df.index == p, "<-", "")
+    result_df["q"] = np.where(result_df.index == q, "<-", "")
+
+    if period is not None: 
+        # 계절 차수 N은 lag N*period 에서 확정된다 (차수 0이면 표시할 자리가 없다 )
+        result_df["P"] = np.where(result_df.index == P, "<-", "")
+    result_df["Q"] = np.where(result_df.index == Q, "<-", "")
+
+    # --- 8) 판정 결과 출력 --- 
+    print(f"관측치 {n}개 | 유의성 기준값 {threshold:.3f} | "
+          f"최대 시차 {lags} (상한 N/4 = {limit})")
+
+    for name, code, order, kind, step in (("AR", "p", p, "PACF", 1), ("MA","q",q,"ACF",1)):
+        reason = (f"{kind}가 lag {order * step} 이후 절단" if order
+                  else f"{kind}가 lag {step}부터 비유의")
+        print(f"{name} 차수 후보 ({code}): {order} <- {reason}")
+
+    if period is not None:
+        for name, code, order, kind, step in (("계절 AR", "P", P, "계절 PACF", period),
+                                                ("계절 MA", "Q", Q, "계절 ACF", period)):
+            reason = (f"{kind}가 lag {order * step} 이후 절단" if order
+                    else f"{kind}가 lag {step}부터 비유의")
+            print(f"{name} 차수 후보 ({code}): {order}  ← {reason} "
+                f"(판정 시차 {season_lags})")
+
+        print(f"→ SARIMA({p}, d, {q})({P}, D, {Q})[{period}] "
+            f"– d·D 는 차분 단계의 결과를 넣는다")
+        
+    # --- 9) 시각화 ---
+    if plot:
+        fig, ax = my_plot.init(rows=rows, cols=cols, width=width, height=height, title=title)
+
+        # ACF : MA 차수(q·Q)의 근거 / PACF : AR 차수(p·P)의 근거
+        for axis, func, name, code, order, s_code, s_order in (
+                (ax[0], plot_acf, "ACF", "q", q, "Q", Q),
+                (ax[1], plot_pacf, "PACF", "p", p, "P", P)):
+            func(data, lags=lags, ax=axis)
+
+            if order:
+                axis.axvline(order, color="red", linestyle="--", linewidth=1)
+                subtitle = f"{name} – lag {order} 이후 절단 → {code} = {order}"
+            else:
+                subtitle = f"{name} – lag 1부터 비유의 → {code} = 0"
+
+            if period is not None and s_order:
+                # 계절 차수가 확정된 시차는 초록 점선으로 따로 표시한다
+                axis.axvline(s_order * period, color="green", linestyle=":", linewidth=1.5)
+                subtitle += f" | 계절 lag {s_order * period}까지 유의 → {s_code} = {s_order}"
+
+            axis.set_title(subtitle)
+            axis.set_xlabel("Lag")
+
+        my_plot.show(save_path=save_path)
+
+    # --- 10) 가장 뒤쪽 차수의 lag까지만 반환 --- 
+    # 차수가 하나도 잡히지 않았다면 자를 기준이 없으므로 근거를 통째로 돌려준다 
+    cut = max(p, q, P*period, Q*period) if period else max(p, q)
+
+    return result_df if cut == 0 else result_df.loc[:cut]
+
+def fit_model(data, column=None, p=1, d=1, q=1, P=1, D=1, Q=1, s=None,
+              log=False, search_diff=False, report=True, summary=False):
+    """차수 범위 안의 모든 SARIMA 조합을 적합해 AIC가 가장 낮은 모형을 고른다.
+    
+    Args:
+        data (DataFrame | Series): 차분하지 않은 원본 시계열 
+        column (str): data가 데이터프레임인 경우 대상 컬럼명 (기본값: None)
+        p (int): 비계절 AR 차수의 상한 (기본값: 1)
+        d (int): 일반 차분 횟수 (기본값:1)
+        q (int): 비계절 MA 차수의 상한 (기본값: 1)
+        P (int): 계절 AR 차수의 상한 (기본값: 1)
+        D (int): 계절 차분 횟수 (기본값: 1)
+        Q (int): 계절 MA 차수의 상한 (기본값: 1)
+        s (int): 계절 주기. None이면 계절 성분을 쓰지 않음 (기본값:None)
+        log (bool): 로그를 씌워 적합할지 여부 (기본값: False)
+        search_diff (bool): d, D도 0부터 탐색할지 여부 (기본값: False)
+        report (bool): 조합별 AIC, BIC 결과표 출력 여부 (기본값: True)
+        summary (bool): 선택된 모형의 요약 통계량 출력 여부 (기본값: False) 
+
+    Returns: 
+        선택된 차수로 적합한 SARIMAX 결과 객체 
+            탐색 결과표가 'grid_', 로그변환 여부가 'log_'속성으로 붙는다.    
+    """
+    # --- 1) 대상 추출 ---
+    if column is not None: 
+        data = data[column]
+
+    data = data.dropna()
+
+    # 로그변환은 여기서 한 번만 한다. 차분은 SARIMAX가 d, D로 알아서 처리한다. 
+    endog = np.log(data) if log else data
+
+    # --- 2) 탐색할 차수 조합 만들기 ---
+    # 계절 주기가 없으면 계절 성분은 아예 만들지 않는다. 
+    if s is None: 
+        s = P = D = Q = 0 
+
+    # d, D는 차분 단계에서 이미 확정된 값으로 기본적으로 고정한다.
+    # 차분횟수가 다르면 모형이 설명하는 대상 자체가 달라져 AIC를 나란히 비교할 수 없다. 
+    d_range = range(d +1) if search_diff else [d]
+    D_range = range(D +1) if search_diff else [D]
+
+    orders = list(product(range(p+1), d_range, range(q+1), 
+                          range(P+1), D_range, range(Q+1)))
+
+    # --- 3) 조합마다 적합해 AIC, BIC를 쌓는다 ---  
+    result = [] # 결과를 담을 리스트 
+    best = None # 최적 모형을 담을 변수 
+
+    for try_p, try_d, try_q, try_P, try_D, try_Q in orders:
+        # --- 3-1) 적합 시도 ---
+        try:
+            # 조합을 여러개 적합하면 수렴 경고가 반복 출력 되므로 이 안에서만 숨긴다 
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                m = SARIMAX(endog, order=(try_p, try_d, try_q),
+                            seasonal_order=(try_P, try_D, try_Q, s)).fit(disp=False)
+        except Exception:
+            continue # 적합에 실패한 조합은 후보에서 뺀다 
+
+        # --- 3-2) 결과 기록 ---
+        name = f"({try_p}, {try_d}, {try_q})"
+
+        if s : 
+            name += f"({try_P}, {try_D}, {try_Q}, {s})"
+
+        result.append({
+            "모형": name, 
+            "p": try_p, "d":try_d, "q":try_q,
+            "P": try_P, "D":try_D, "Q":try_Q, "s":s,
+            "계수 수": len(m.params), 
+            "AIC": round(m.aic, 3), 
+            "BIC": round(m.bic, 3), 
+        })
+        # --- 3-3) 최적 모형 갱신 ---
+        # AIC가 더 낮은 모형을 만나면 그 자리에서 갈아 끼운다 (다시 적합할 필요가 없다) 
+        if best is None or m.aic < best.aic:
+            best = m 
+
+    if best is None: 
+        raise ValueError("적합에 성공한 조합이 없습니다. 차수 범위나 데이터를 확인하세요")  
+    
+    # --- 4) AIC 오름차순으로 순위를 매긴다 ---
+    grid = DataFrame(result).sort_values("AIC").reset_index(drop=True)
+    grid.index = grid.index + 1
+    grid.index.name = "순위"    
+
+    # --- 5) 탐색 결과 출력 ---
+    if report :
+        print(f"시도한 조합 {len(orders)}가지 | 적합 성공 {len(grid)}가지"
+              f"{' | 로그변환 적용' if log else ''}")
+        print(f"AIC 최적: {grid.iloc[0]['모형']} | "
+              f"BIC 최적: {grid.sort_values('BIC').iloc[0]['모형']}")
+        display(grid)
+
+    if summary:
+        print(best.summary())
+
+    # --- 6) 탐색 결과와 로그 여부를 결과 객체에 붙여 반환 ---
+    # predict()가 예측값을 원래 단위로 되돌릴 때 log_ 를 쓴다 
+    best.grid = grid
+    best.log = log 
+
+    return best
+
+def predict(fit, steps, alpha=0.05, plot=True, history=None, 
+            title=None, xlabel=None, ylabel=None, 
+            width=1280, height=520, save_path=None):
+    """적합된 SARIMA 모형으로 관측 구간 다음의 예측값과 예측구간을 계산한다.
+    
+    Args: 
+        fit: 'fit_model' 함수로 적합된 SARIMAX 결과 객체 
+        steps (int): 내다볼 시점의 개수. 계절 주기를 넣으면 한 시즌이 된다. 
+        alpha (float): 예측 구간의 유의수준. 0.05면 95% 구간 (기본값: 0.05)
+        plot (bool): 관측값과 예측 결과를 그래프로 그릴지 여부 (기본값: True)
+        history (int): 그래프에 함께 그릴 최근 관측치 수. None이면 전체 (기본값: None)
+        title (str): 그래프 제목 (기본값: None)
+        xlabel (str): x축 레이블 (기본값: None)
+        ylabel (str): y축 레이블 (기본값: None)
+        width (int): 캔버스 가로 픽셀 (기본값: 1280)
+        height (int): 캔버스 세로 픽셀 (기본값: 520)
+        save_path (str): 이미지 저장 경로 (기본값: None) 
+
+    Returns: 
+        DataFrame: 미래 시점을 인덱스로 하는 예측 표 (pred, lower, upper)   
+
+    """
+    # --- 1) 예측값과 예측구간 계산 ---
+    # 평균 예측값과 예측구간을 함께 담고 있는 결과 객체 
+    forecast = fit.get_forecast(steps=steps)
+    conf = forecast.conf_int(alpha=alpha)
+
+    result = DataFrame({
+        "pred": forecast.predicted_mean,
+        "lower": conf.iloc[:, 0], 
+        "upper": conf.iloc[:, 1], 
+    })
+
+    # 로그를 씌워 적합했다면 예측값도 로그 스케일이므로 원래 단위로 되돌린다 
+    log = getattr(fit, "log_", False)
+
+    if log: 
+        result = np.exp(result)
+
+    result.index.name = "시점" # 인덱스 이름 설정 
+
+    if not plot: # 그래프 옵션 off시 결과 반환 및 함수 종료 
+        return result 
+    
+    # --- 2) 그래프에 함께 그릴 관측 구간 준비 ---
+    # 적합에 쓴 원본은 결과 객체가 그대로 들고 있다. 따로 넘겨받을 필요가 없다. 
+    observed = Series(np.asarray(fit.model.endog).ravel(), index=fit.fittedvalues.index)
+
+    if log :
+        observed = np.exp(observed)
+
+    if history is not None: # 예측 구간 근처만 확대해서 보고 싶을 때
+        observed = observed.iloc[-history:]
+
+    # --- 3) 그래프 제목 및 데이터 연결 ---
+    # 그래프 제목 구성
+    if title is None :
+        title = f"{steps}시점 예측 ({(1 - alpha) * 100 : .0f}% 예측구간)"
+
+    # 적합값과 예측치를 연결 
+    # -> 관측의 마지막 값을 예측선의 출발점으로 붙여야 선이 끊겨 보이지 않는다. 
+    last = observed.index[-1]
+    linked = concat([Series({last: observed.iloc[-1]}), result["pred"]])    
+
+    # --- 4) 그래프 그리기 ---
+    fig, ax = my_plot.init(width=width, height=height, title=title,
+                        xlabel=xlabel, ylabel=ylabel)
+
+    my_plot.lineplot(x=observed.index, y=observed.values, label="관측값", ax=ax)
+
+    my_plot.lineplot(x=linked.index, y=linked.values, label="예측값",
+                    linestyle="--", ax=ax)
+
+    # 예측구간은 직선이 아니라 점선으로 그린다. 뒤로 갈수록 넓어지는 모습이 드러난다
+    ax.fill_between(result.index, result["lower"], result["upper"],
+                    alpha=0.2, label=f"{(1 - alpha) * 100:.0f}% 예측구간")
+
+    # 경계 표시: 이 선의 오른쪽은 실제 값이 존재하지 않는 구간이다
+    ax.axvline(last, color="gray", linestyle=":", linewidth=1)
+
+    ax.legend()
+    my_plot.show(save_path=save_path)
+
+    return result
+
+def report_residual(fit, alpha=0.05, report=True, plot=True, title=None, 
+                    xlabel=None, ylabel=None, width=800, height=480, save_path=None):
+    """적합된 시계열 모형의 잔차가 세가지 가정을 만족하는지 한 표로 점검한다.
+
+    잔차에 패턴이 남아 있으면 모형이 아직 뽑아내지 못한 정보가 있다는 뜻이고, 
+    정규성, 등분산성이 깨지면 예측구간의 폭을 그대로 믿을 수 없게 된다. 
+
+    Args: 
+        fit: 적합된 시계열 모형의 결과 객체 
+        alpha (float): 유의수준 (기본값: 0.05)
+        report (bool): 종합 판정 문장 출력 여부 (기본값: True)
+        plot (bool): 잔차의 흐름과 분포를 그래프로 그릴지 여부 (기본값: True)
+        title (str): 그래프 전체 제목 (기본값: None)
+        xlabel (str): 잔차 흐름 그래프의 x축 레이블 (기본값: None)
+        ylabel (str): 잔차 흐름 그래프의 y축 레이블 (기본값: None)
+        width (int): 캔버스 한 칸의 가로 픽셀 (기본값: 800)
+        height (int): 캔버스 세로 픽셀 (기본값: 480)
+        save_path (str): 이미지 저장 경로 (기본값: None)
+    
+    Returns:
+        DataFrame: 검정명을 인덱스로 하는 잔차 진단 결과표 
+    """
+    # --- 1) 모형에서 차수 정보를 꺼낸다 ---
+    # SARIMAX 계열은 (p, d, q)와 (P, D, Q, s)를 모형 객체가 그대로 들고 있다. 
+    # 여기서 쓰는 값은 차분 횟수 (d, D)와 계절 주기 (period)뿐이다. 
+    model = getattr(fit, "model", None)
+    p, d, q = getattr(model, "order", (0,0,0))
+    P, D, Q , period = getattr(model, "seasonal_order", (0,0,0,0))
+
+    # --- 2) 진단 대상 잔차 준비 ---
+    x = Series(fit.resid).dropna()
+
+    # 차분이 소모한 앞 구간은 모형이 아직 자리를 잡지 못해 잔차가 비정상적으로 크다 
+    burn = d+D * period 
+
+    if burn: 
+        x = x.iloc[burn:]
+
+    result = [] # 검정 결과를 담을 리스트 
+
+    # --- 3) 무상관: Ljung-Box 검정 ---
+    # 여러 시차를 한 묶음으로 검정해 "남은 자기상관이 있는가"를 판정한다 
+    # 계절 주기가 있으면 한시즌, 두시즌, 없으면 관례값인 10시차를 본다 
+    # (Hyndman & Athanasopoulos, 2021), statsmodels 내부 코드도 10 시차를 기본값으로 쓴다 
+    lags = [period, period * 2] if period else [10]
+
+    # 모형이 추정한 계수 수만큼 자유도를 빼야 한다. 시차가 이보다 작으면 검정이 성립하지 않는다
+    model_df = p + q + P + Q
+
+    # 시차가 표본 대비 크면 검정력이 떨어진다. 관례에 따라 관측치 수의 1/5로 제한한다 
+    lags = [lag for lag in lags if model_df < lag <= len(x) // 5]
+
+    # 시차가 하나도 남지 않으면 관례값을 쓰되, 관측치 수의 1/5보다 크면 안된다 
+    if not lags : lags = [max(model_df +1, len(x) //5)]
+
+    # 무상관 검정 수행 
+    lb = acorr_ljungbox(x, lags=lags, model_df=model_df, return_df=True)    
+
+    # 검정 결과를 표로 정리 
+    for lag, row in lb.iterrows():
+        passed = bool(row["lb_pvalue"] >= alpha) 
+
+        result.append({
+            "검정": f"Ljung-Box (시차 {lag})", 
+            "가정": "무상관", 
+            "관측치 수": len(x), 
+            "통계량": round(row["lb_stat"], 3),
+            "p-value": round(row["lb_pvalue"], 4), 
+            "통과": passed, 
+            "판정": "통과 (자기상관 없음)" if passed else "실패 (자기상관 남음)",
+            "비고": f"자유도 {lag - model_df}" , 
+        })
+    # --- 4) 정규성 : Jarque-Bera 검정 ---
+    jb_stat, jb_p, skew, kurtosis = fit.test_normality("jarquebera")[0]
+
+    passed = bool(jb_p >= alpha)
+
+    result.append({
+        "검정": "Jarque-Bera",
+        "가정": "정규성",
+        "관측치 수": len(x),
+        "통계량": round(jb_stat, 3),
+        "p-value": round(jb_p, 4),
+        "통과": passed,
+        "판정": "통과 (정규성 만족)" if passed else "실패 (정규성 위배)",
+        "비고": f"왜도 {skew:.3f} · 첨도 {kurtosis:.3f}",
+    })    
+
+    # --- 5) 등분산성 : 이분산(H) 검정 ---
+    h_stat, h_p = fit.test_heteroskedasticity("breakvar")[0]
+
+    passed = bool(h_p >= alpha)     # 이분산 검정 통과 여부
+
+    # 검정 결과를 표로 정리
+    result.append({
+        "검정": "이분산(H)",
+        "가정": "등분산성",
+        "관측치 수": len(x),
+        "통계량": round(h_stat, 3),
+        "p-value": round(h_p, 4),
+        "통과": passed,
+        "판정": "통과 (등분산)" if passed else "실패 (이분산)",
+        # H > 1이면 예측구간이 좁게(낙관적), H < 1이면 넓게(보수적) 잡힌다
+        "비고": "뒤로 갈수록 커짐" if h_stat > 1 else "뒤로 갈수록 작아짐",
+    })
+
+    # --- 6) 결과표 구성 ---
+    result = DataFrame(result).set_index("검정")
+
+    if report:
+        failed = list(result.index[~result["통과"]])
+
+        print(f"진단 대상 {len(x)}개 (앞 {burn}개 제외) | 유의수준 {alpha}")
+        print("실패한 검정:", ", ".join(failed) if failed else "없음 (모든 가정 통과)")
+
+    if not plot:                    # 그래프 옵션 off시 결과 반환 및 함수 종료
+        return result
+    
+    # --- 7) 잔차의 모습 살펴보기 ---
+    # 검정 결과는 숫자 하나로만 말해 준다. 눈으로 봐야 잡히는 문제도 있다
+    fig, ax = my_plot.init(rows=1, cols=2, width=width, height=height, title=title)
+
+    # 시간에 따른 잔차 : 0 주변을 무작위로 오가야 한다
+    my_plot.lineplot(x=x.index, y=x.values, ax=ax[0])
+    ax[0].axhline(0, color="red", linestyle="--", linewidth=1)
+    ax[0].set_title("시간에 따른 잔차")
+    ax[0].set_xlabel(xlabel)
+    ax[0].set_ylabel(ylabel)
+
+    # 잔차의 분포 : 종 모양이어야 한다
+    my_plot.histplot(data=x.to_frame(name="잔차"), x="잔차", kde=True, ax=ax[1])
+    ax[1].set_title("잔차의 분포")
+
+    my_plot.show(save_path=save_path)
+
+    return result
+
+def report_score(fit, name="적합값", report=True):
+    """모형의 예측값과 기준선(나이브)의 오차를 원래 단위에서 나란히 비교한다.
+
+    성능 지표는 혼자 보면 잘한 것인지 알 수 없다. 
+    "작년 같은 달과 똑같을 것이다" 수준의 기준선을 함께 계산해 보고 비교 대상으로 삼는다. 
+
+    Args:
+        fit: 적합된 시계열 모형 결과 객체 
+        name (str): 결과표에 표시할 모형 행 이름 (기본값: "적합값")
+        report (bool): 평가 구간과 기준선 대비 개선폭 출력 여부 (기본값: True)
+
+    Returns: 
+        DataFrame: 대상을 인덱스로 하는 성능 지표표 (MAE, RMSE, MAPE)
+    """
+    # --- 1) 모형에서 차수 정보를 꺼낸다 ---
+    # 여기서 쓰는 값은 차분 횟수(d, D)와 계절 주기(s) 뿐이다.
+    model = getattr(fit, "model", None)
+    p, d, q = getattr(model, "order", (0, 0,0))
+    P, D, Q, s = getattr(model, "seasonal_order", (0,0,0,0))
+
+    # 로그를 씌워 적합했다면 지표는 반드시 원래 단위로 되돌린 뒤 계산해야 
+    # "몇 명 틀리는가"를 말할 수 있다. 
+    log = getattr(fit, "log_", False)
+
+    # --- 2) 관측값과 예측값 확보 ---
+    # 적합에 쓴 시계열은 결과 객체가 그대로 들고 있다. 따로 넘겨받을 필요가 없다. 
+    endog = model.data.orig_endog 
+
+    actual = endog if isinstance(endog, Series) else \
+            Series(np.asarray(endog).ravel(), index=fit.fittedvalues.index)
+
+    pred = fit.fittedvalues
+
+    if log: 
+        actual = np.exp(actual)
+        pred = np.exp(pred)
+
+    # --- 3) 기준선(나이브) 준비 ---
+    # 계절 주기가 있으면 작년 같은 달, 없으면 직전 시점을 그대로 예측값으로 쓴다.
+    period = s if s else 1
+
+    base_name = f"계절 나이브 (시차 {period})" if period > 1 else "나이브 (직전값)"
+
+    # --- 4) 공통 평가 구간 맞추기 ---
+    # 대상마다 유효 구간이 달면 비교가 성립하지 않는다. 모두 존재하는 구간만 남긴다.
+    table = DataFrame({
+        "관측값": actual, 
+        name : pred, 
+        base_name: actual.shift(period), # 기준선은 항상 함께 계산한다
+    })
+
+    # 차분이 소모한 앞 구간은 모형이 아직 자리를 잡지 못해 오차가 비정상적으로 크다 
+    burn = d + D * s
+    
+    # 차분이 소모한 구간이 있다면 그 구간은 평가에서 제외 
+    if burn: table = table.iloc[burn:]  
+
+    # 관측값이 없는 시점은 평가에서 제외 
+    table = table.dropna() 
+
+    # --- 5) 대상별 지표 계산 ---
+    y = table["관측값"].values # 관측값
+    nonzero = y != 0 # 관측값이 0인 시점은 MAPE를 계산할 수 없다
+    result = [] # 지표를 담을 리스트 
+
+    for target in table.columns[1:]: # 0번째 컬럼은 관측값이므로 제외 
+        error = y - table[target].values # 오차 계산 (관측값 - 예측값)
+
+        result.append({
+            "대상": target, 
+            "관측치 수": len(error), 
+            "MAE": round(np.mean(np.abs(error)), 3), 
+            "RMSE": round(np.sqrt(np.mean(error ** 2)), 3), 
+            "MAPE(%)": round(np.mean(np.abs(error[nonzero] / y[nonzero]))*100, 3)
+            if nonzero.any() else np.nan, 
+        })
+
+    result = DataFrame(result).set_index("대상")
+
+    # --- 6) 기준선 대비 개선폭 출력 및 반환 --- 
+    if report: 
+        model_mape = result.loc[name, "MAPE(%)"]
+        base_mape = result.loc[base_name, "MAPE(%)"]
+        gap = (base_mape - model_mape) / base_mape * 100 
+
+    print(f"평가 구간 {len(table)}개 ({table.index[0]} ~ {table.index[-1]})")
+    print(f"MAPE {base_mape:.3f}% → {model_mape:.3f}% | "
+          f"기준선 대비 {abs(gap):.1f}% {'개선' if gap > 0 else '악화'}")
+
+    return result

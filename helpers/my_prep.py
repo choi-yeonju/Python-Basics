@@ -1,11 +1,17 @@
 import os
 import joblib
 import numpy as np
+from math import ceil 
+from itertools import combinations
+from IPython.display import display
 from pandas import pivot_table, get_dummies
 from scipy.stats import skew
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler, MaxAbsScaler
 from sklearn.preprocessing import LabelEncoder
+from sklearn.decomposition import PCA
+from . import RANDOM_STATE
 from . import my_stats
+from . import my_plot
 
 # scaling() 에서 사용할 스케일러 이름과 클래스의 매핑
 SCALERS = {
@@ -542,3 +548,154 @@ def scaling(df, columns=None, method='standard', save_path=None, verbose=True):
     # --- 6) 스케일링된 데이터프레임 반환 ---
     return result 
 
+def pca(df, y=None, n_components=0.8, scale=True, method='standard', 
+        save_path=None, report=True, plot=True, biplot=None, 
+        palette='coolwarm', hue_palette='tab10', width=1280, height=640,
+        random_state=RANDOM_STATE):
+    """스케일링부터 주성분 추출, 로딩, 해석, 시각화까지 한번에 수행하는 함수 
+    
+    Args:
+        data (DataFrame): 주성분 분석을 적용할 데이터 프레임 
+        y (str, optional): 종속변수 컬럼명, 지정하면 분석에서 제외하고 결과에 다시 붙인다 (기본값: None)
+        n_components (float | int | str): 남길 주성분의 기준 (기본값: 0.8)
+            - 0~1 사이 실수 : 누적 설명력이 이 값을 넘는 지점까지의 주성분 
+            - 정수 : 주성분의 개수 
+            - 'mle': 최대우도추정으로 개수를 자동 결정 
+        scale (bool): 분석 전에 스케일링을 수행할지 여부 (기본값: True)
+        method (str): scale=True 일때 사용할 스케일러 이름( 기본값: 'standard')
+        save_path (str): scale=True 일때 사용할 스케일러 이름 (기본값: 'standard')
+        report (bool): 주성분 로딩 벡터표를 출력할지 여부 (기본값: True)
+        plot (bool): 누적 설명력 그래프와 로딩 히트맵을 출력할지 여부 (기본값: True)
+        biplot (list |str, optional): 바이플롯으로 그릴 [x축 주성분, y축 주성분] 쌍의 2차원 리스트 
+            'all'이면 채택된 주성분의 모든 조합을 그린다. (기본값:None, 그리지 않음)
+        palette (str): 로딩 히트맵의 색상 팔레트 (기본값: 'coolwarm')
+        hue_palette (str): 바이플롯에서 종속변수를 구분할 색상 팔레트 (기본값: 'tab10')
+        width (int): 서브플롯 한 칸의 가로 픽셀 (기본값: 1280)
+        height (int): 서브플롯 한 줄의 세로 픽셀 (기본값: 640)
+        random_state (int): 재현성을 위한 랜덤 시드 (기본값: RANDOM_STATE)  
+
+    Returns: 
+        DataFrame: 주성분 점수(PC1, PC1, ...) 데이터 프레임. y를 지정했다면 종속변수가 함께 붙는다. 
+    
+    Raises:
+        ValueError : 'biplot'에 채택되지 않은 주성분 이름이 포함된 경우 
+    """
+    # --- 1) 분석 대상 변수 선정 ---
+    target = None # 결과에 다시 붙이기 위해 보관해 둘 종속변수 
+    work = df # 실제로 주성분을 뽑을 독립변수들 
+
+    # 1-1) 종속변수 분리 
+    # 차원축소는 독립변수에만 적용하는 기법이므로 종속변수는 미리 떼어둔다 
+    if y is not None:
+        target = df[y]
+        work = df.drop(column=[y])
+
+    # 1-2) 수치형 변수만 선택 
+    # 주성분은 분산을 계산해 구하므로 수치형이 아닌 변수는 대상에서 제외한다 
+    work = work.select_dtypes(include='number') 
+
+    # --- 2) 스케일링 --- 
+    # 단위가 큰 변수가 분산도 크게 잡혀 주성분을 독점하므로 눈금을 통일한다 (PCA에서는 사실상 필수)
+    if scale:
+        work = scaling(work, method=method, verbose=False)
+    
+    # --- 3) 주성분 분석 수행 ---
+    # 3-1) 전체 주성분의 누적 설명력 확보 
+    # 몇 개를 채택할지 판단하려면 잘라내기 전의 설명력 곡선이 필요하므로 먼저 전부 구해 둔다 
+    cumulative = PCA(n_components=None, 
+                     random_state=random_state).fit(work).explained_variance_ratio_.cumsum()
+
+    # 3-2) 기준만큼만 남긴 주성분 추출
+    # n_components 에 준 기준(개수 또는 누적 설명력)까지의 주성분을 실제 결과로 사용한다 
+    estimator = PCA(n_components=n_components, random_state=random_state)
+    score = estimator.fit_transform(work)
+
+    # --- 4) 주성분 점수를 데이터프레임으로 구성 ---
+    # 4-1) 주성분 이름 생성
+    # 주성분의 이름은 관례에 따라 PC1, PC2, ....PCn 으로 붙인다 
+    cols = [f'PC{i+1}' for i in range(score.shape[1])]
+
+    # 4-2) 주성분 점수를 데이터프레임으로 변환
+    # 원본과 행을 짝지어 볼 수 있도록 인덱스를 그대로 물려준다 
+    result = DataFrame(score, columns=cols, index=work.index)
+
+    # 4-3) 떼어 두었던 종속변수 되붙이기 
+    if target is not None:
+        result[y] = target
+     
+    # --- 5) 주성분 로딩 벡터표 구성 ---
+    # 5-1) 로딩 행렬 (주성분 x 원래 변수)
+    # 로딩은 "원래 변수가 그 주성분에 얼마나 기여했는지"를 나타내는 가중치다 
+    loadings = DataFrame(estimator.components_, columns=work.columns, index=cols)
+
+    # 5-2) 주성분별 설명력 덧붙이기 
+    loadings['[설명력]'] = estimator.explained_variance_ratio_
+    loadings['[누적 설명력]'] = estimator.explained_variance_ratio_.cumsum()
+
+    # 5-3) 변수를 행으로 두도록 전치 (변수 수가 많아도 읽기 쉽다)
+    loadings = loadings.T
+    loadings.index.name = 'Features'
+    
+    # --- 6) 로딩 벡터표 출력 ---
+    if report: 
+        # 6-1) 압축 결과 요약 (변수 몇 개가 주성분 몇 개로 줄었는지)
+        print(f'변수 {work.shape[1]}개 -> 주성분 {len(cols)}개'
+              f'(누적 설명력 {loadings.loc["[누적 설명력]"].iloc[-1]:.1%})')
+
+        # 6-2) 로딩 벡터표 출력 
+        display(loadings)
+
+    # --- 7) 시각화 (1): 누적 설명력 + 로딩 히트맵 ---
+    if plot:
+        fig, ax = my_plot.init(rows=1, cols=2, width=width, height=height)
+
+        # 누적 설명력 곡선 (스크리 플롯): 주성분을 몇 개까지 쓸지 판단하는 근거
+        k_list = list(range(1, len(cumulative) + 1))
+        my_plot.lineplot(x=k_list, y=cumulative, marker='o', ax=ax[0])
+        ax[0].set_title('주성분 개수에 따른 누적 설명력', fontsize=16)
+        ax[0].set_xlabel('주성분 개수')
+        ax[0].set_ylabel('누적 설명력')
+        ax[0].set_xticks(k_list)
+
+        # 누적 설명력 임계선 (n_components 를 0~1 실수로 지정한 경우에만)
+        if isinstance(n_components, float) and 0 < n_components < 1:
+            ax[0].axhline(n_components, color='red', linestyle='--', linewidth=1)
+            ax[0].text(1, n_components + 0.01, f'{n_components:.0%}', color='red')
+
+        # 실제로 채택된 주성분 개수 표시
+        k = len(cols)
+        ax[0].axvline(k, color='red', linestyle='--', linewidth=1)
+        ax[0].text(k + 0.1, cumulative.min(), f'PC{k}', color='red')
+
+        # 로딩 히트맵: 진한 색(양수/음수 양쪽 끝)일수록 그 주성분을 대표하는 변수
+        # 설명력 행 두 개는 로딩이 아니므로 제외한다
+        my_plot.heatmap(data=loadings.iloc[:-2, :], fmt='0.2f', palette=palette, ax=ax[1])
+        ax[1].set_title('주성분 로딩', fontsize=16)
+
+        my_plot.show()
+
+    # --- 8) 시각화(2) : 바이플롯 ---
+    # 관측치(점)와 원래 변수(화살표)를 같은 평면에 겹쳐 그려, 어떤 변수가 어느 방향을 가리키는지 본다 
+    if plot and biplot is not None:
+        # 8-1) 그릴 주성분 쌍 결정 (1) : 'all'이면 채택된 주성분의 모든 조합 
+
+        # 8-2) 그릴 주성분 쌍 결정 (2) : 직접 지정한 경우 
+
+        # 8-3) 2열 서브플롯 생성 (쌍이 홀수면 마지막 칸은 비운다)
+
+        for i, (xname, yname) in enumerate(pairs):
+            # 8-4) 쌍에 해당하는 두 주성분의 점수 추출
+
+            # 8-5) 점과 화살표의 크기 맞추기 
+
+            # 8-6) 종속변수가 있으면 색 구분용으로 함께 담는다 
+
+            # 8-7) 관측치를 점으로 표시 
+
+            # 8-8) 원래 변수의 로딩을 화살표로 겹쳐 그린다 
+
+            # 8-9) 서브플롯 제목과 축 이름 
+        # 8-10) 사용하지 않은 칸은 축을 숨긴다
+        # 8-11) 그래프 출력 
+    # --- 9) 학습된 PCA 객체 저장 (선택) ---
+    # --- 10) 주성분 점수 데이터프레임 반환 ---
