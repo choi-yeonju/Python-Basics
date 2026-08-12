@@ -1,0 +1,128 @@
+# ===================================================================
+# 실루엣 시각화 — 군집이 잘 나뉘었는지를 데이터 하나하나 단위로 확인한다
+# 원본: https://scikit-learn.org/stable/auto_examples/cluster/plot_kmeans_silhouette_analysis.html
+# ===================================================================
+def visualize_silhouette(estimator, data, columns=None, cluster_name='그룹번호',
+                         x=None, y=None, title=None, palette='tab10',
+                         size=50, edgecolor='#ffffff', linewidth=1.5, alpha=1, outline=True,
+                         center=True, center_marker='X', center_size=150,
+                         center_color='#ff0000', center_edgecolor='#000000', center_linewidth=1.5,
+                         width=800, height=580, save_path=None):
+    """군집별 실루엣 계수 막대(왼쪽)와 군집 산점도(오른쪽)를 나란히 그리는 함수
+
+    실루엣 계수는 "내가 속한 군집의 이웃들과는 얼마나 가깝고, 가장 가까운 다른 군집과는
+    얼마나 먼가"를 데이터 하나마다 -1~1 사이의 값으로 나타낸 것이다. 평균값 하나만 보면
+    "군집 하나가 통째로 망가진 경우"와 "모든 군집이 고만고만한 경우"를 구분할 수 없으므로,
+    군집별 분포를 막대로 펼쳐서 함께 확인한다.
+
+    Args (기본값은 위의 함수 정의 참고):
+        estimator: 학습이 끝난 군집 모델 (KMeans, AgglomerativeClustering 등)
+        data (DataFrame): 군집에 사용한 데이터
+            (kmeans 함수의 반환값처럼 군집 번호 컬럼이 포함되어 있어도 된다)
+        columns, cluster_name: 실루엣 계산에 사용할 컬럼(None이면 군집 번호 컬럼을 제외한
+            수치형 전체), 데이터에 포함된 군집 번호 컬럼의 이름
+        x, y, title: 산점도의 x·y축 컬럼명(None이면 대상 컬럼의 앞 두 개),
+            그래프 상단 제목(None이면 군집 개수와 실루엣 스코어로 자동 생성)
+        palette, size, edgecolor, linewidth, alpha, outline: 산점도의 색상 팔레트,
+            마커 크기, 테두리 색상, 테두리 두께, 투명도, 외곽선 표시 여부
+            (왼쪽 막대의 색상도 같은 팔레트를 사용하므로 두 그래프의 군집 색이 일치한다)
+        center, center_marker, center_size, center_color, center_edgecolor, center_linewidth:
+            중심점 표시 여부와 마커 모양·크기·색상·테두리 색상·테두리 두께
+            (중심점을 제공하는 모델에서만 표시된다)
+        width, height, save_path: 그래프 한 칸의 가로·세로 픽셀, 저장 경로
+    """
+    labels = estimator.labels_
+
+    # --- 1) 실루엣 계산에 사용할 컬럼 결정 ---
+    # 군집 번호 컬럼이 섞여 있으면 그 자체가 거리 계산에 반영되므로 반드시 제외한다
+    if columns is None:
+        columns = [c for c in data.select_dtypes(include='number').columns if c != cluster_name]
+
+    df = data[columns]
+
+    # --- 2) 노이즈(-1)를 제외한 실제 군집 번호 확인 ---
+    # 실루엣 계수는 "다른 군집과의 거리"가 있어야 정의되므로 군집이 2개는 되어야 한다
+    cluster_ids = sorted([c for c in set(labels) if c != -1])
+    k = len(cluster_ids)
+
+    if k < 2:
+        print("군집이 2개 미만이므로 실루엣 계수를 계산할 수 없습니다.")
+        return
+
+    # --- 3) 전체 평균과 데이터별 실루엣 계수 계산 ---
+    sil_avg = silhouette_score(X=df, labels=labels)
+    sil_values = silhouette_samples(X=df, labels=labels)
+
+    if title is None:
+        title = f'군집수={k}, 실루엣 스코어={sil_avg:.3f}'
+
+    fig, (ax1, ax2) = my_plot.init(width=width, height=height, rows=1, cols=2, title=title)
+
+    # 전체 제목이 각 그래프의 소제목과 겹치지 않도록 위쪽으로 밀어낸다
+    fig.suptitle(title, fontsize=24, fontweight=500, y=1.0)
+
+    # --- 4) 왼쪽: 군집별 실루엣 계수 막대 ---
+    # 오른쪽 산점도와 같은 팔레트를 사용해 두 그래프의 군집 색을 일치시킨다
+    colors = sb.color_palette(palette, k)
+
+    ax1.set_title('군집별 실루엣 계수', fontsize=16, pad=10)
+    ax1.set_xlabel('실루엣 계수')
+    ax1.set_ylabel('군집 번호')
+    ax1.set_xlim([-0.1, 1])
+    ax1.set_ylim([0, len(df) + (k + 1) * 10])
+    ax1.set_yticks([])
+
+    y_lower = 10
+
+    for i, c in enumerate(cluster_ids):
+        # 해당 군집에 속한 데이터의 실루엣 계수를 오름차순으로 정렬 (칼날 모양의 막대가 된다)
+        ith_values = np.sort(sil_values[labels == c])
+        y_upper = y_lower + len(ith_values)
+
+        ax1.fill_betweenx(np.arange(y_lower, y_upper), 0, ith_values,
+                          facecolor=colors[i], edgecolor=colors[i], alpha=0.7)
+        ax1.text(-0.05, y_lower + 0.5 * len(ith_values), str(c))
+
+        # 다음 군집의 막대를 10칸 띄워서 그리기 위한 시작 위치
+        y_lower = y_upper + 10
+
+    # 전체 평균 실루엣 계수를 빨간 점선으로 표시 (이 선을 넘지 못하는 군집이 문제 군집)
+    ax1.axvline(x=sil_avg, color='red', linestyle='--')
+
+    # --- 5) 오른쪽: 군집 산점도 ---
+    if x is None:       x = columns[0]
+    if y is None:       y = columns[1]
+
+    vdf = df.copy()
+    vdf[cluster_name] = labels
+
+    my_plot.scatterplot(data=vdf, x=x, y=y, hue=cluster_name, palette=palette,
+                        size=size, edgecolor=edgecolor, linewidth=linewidth,
+                        alpha=alpha, outline=outline, ax=ax2)
+
+    ax2.set_title('군집 산점도', fontsize=16, pad=10)
+    ax2.set_xlabel(x)
+    ax2.set_ylabel(y)
+
+    # 중심점을 제공하는 모델(KMeans 등)이라면 중심점도 함께 표시
+    centers = getattr(estimator, 'cluster_centers_', None)
+
+    if center and centers is not None:
+        center_df = DataFrame(centers, columns=columns)
+        my_plot.scatterplot(data=center_df, x=x, y=y,
+                            marker=center_marker, size=center_size,
+                            color=center_color, edgecolor=center_edgecolor,
+                            linewidth=center_linewidth, outline=False, ax=ax2)
+
+    # 범례를 그래프 바깥 오른쪽 위에 고정한다
+    # (자동 배치에 맡기면 데이터가 없는 자리를 찾아다니느라 K마다 위치가 달라진다)
+    handles, texts = ax2.get_legend_handles_labels()
+
+    if handles:
+        ax2.legend(handles, texts, title=cluster_name,
+                   loc='upper left', bbox_to_anchor=(1.02, 1), borderaxespad=0)
+
+    # --- 6) 그래프 표시 ---
+    # 전체 제목이 들어갈 위쪽 공간(7%)을 미리 비워 둔 뒤 표시한다
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    my_plot.show(save_path=save_path)

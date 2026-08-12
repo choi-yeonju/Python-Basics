@@ -4,7 +4,7 @@ import numpy as np
 from math import ceil 
 from itertools import combinations
 from IPython.display import display
-from pandas import pivot_table, get_dummies
+from pandas import pivot_table, get_dummies, DataFrame
 from scipy.stats import skew
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler, MaxAbsScaler
 from sklearn.preprocessing import LabelEncoder
@@ -588,7 +588,7 @@ def pca(df, y=None, n_components=0.8, scale=True, method='standard',
     # 차원축소는 독립변수에만 적용하는 기법이므로 종속변수는 미리 떼어둔다 
     if y is not None:
         target = df[y]
-        work = df.drop(column=[y])
+        work = df.drop(columns=[y])
 
     # 1-2) 수치형 변수만 선택 
     # 주성분은 분산을 계산해 구하므로 수치형이 아닌 변수는 대상에서 제외한다 
@@ -678,24 +678,91 @@ def pca(df, y=None, n_components=0.8, scale=True, method='standard',
     # 관측치(점)와 원래 변수(화살표)를 같은 평면에 겹쳐 그려, 어떤 변수가 어느 방향을 가리키는지 본다 
     if plot and biplot is not None:
         # 8-1) 그릴 주성분 쌍 결정 (1) : 'all'이면 채택된 주성분의 모든 조합 
+        if isinstance(biplot, str):
+            if biplot.lower().strip() != 'all':
+                raise ValueError(f"biplot 에는 2차원 리스트 또는 'all'만 지정할 수 있습니다: '{biplot}'")
+
+            pairs = list(combinations(cols, 2)) 
 
         # 8-2) 그릴 주성분 쌍 결정 (2) : 직접 지정한 경우 
+        else:
+            # [x, y] 한 쌍만 1차원으로 넘긴 경우도 2차원 리스트 처럼 취급한다 
+            pairs = [biplot] if isinstance(biplot[0], str) else list(biplot)
 
+            # 채택되지 않은 주성분을 지정했다면 그릴 수 없으므로 미리 막는다 
+            for xname, yname in pairs:
+                for name in [xname, yname]:
+                    if name not in cols:
+                        raise ValueError(f'채택되지 않은 주성분입니다: {name} (사용 가능: {cols})')
+                    
         # 8-3) 2열 서브플롯 생성 (쌍이 홀수면 마지막 칸은 비운다)
+        rows = ceil(len(pairs) / 2)             
+        fig, ax = my_plot.init(rows=rows, cols=2, width=width, height=height)
 
-        for i, (xname, yname) in enumerate(pairs):
+        for i , (xname, yname) in enumerate(pairs): 
             # 8-4) 쌍에 해당하는 두 주성분의 점수 추출
+            x_index = cols.index(xname)
+            y_index = cols.index(yname)
 
+            xs = score[:, x_index]
+            ys = score[:, y_index]  
+        
             # 8-5) 점과 화살표의 크기 맞추기 
+            # 주성분 점수는 화살표(로딩)보다 훨씬 크므로 -1 ~1 근처로 줄여야 함께 보인다 
+            scalex = 1.0/ (xs.max() - xs.min())
+            scaley = 1.0/ (ys.max() - ys.min())
 
+            vdf = DataFrame({xname: xs*scalex, yname:ys*scaley})
+           
             # 8-6) 종속변수가 있으면 색 구분용으로 함께 담는다 
+            hue = None
+            if target is not None:
+                vdf[y] = target.values
+                hue = y 
 
-            # 8-7) 관측치를 점으로 표시 
+            # 8-7) 관측치를 점으로 표시
+            my_plot.scatterplot(data=vdf, x=xname, y=yname, hue=hue, size=20,
+                                alpha=0.6, outline=False, palette=hue_palette, ax=ax[i])
 
-            # 8-8) 원래 변수의 로딩을 화살표로 겹쳐 그린다 
+            # 8-8) 원래 변수의 로딩을 화살표로 겹쳐 그린다
+            for j, feature in enumerate(work.columns):
+                # 원점에서 (x축 주성분의 로딩, y축 주성분의 로딩) 방향으로 뻗는 화살표
+                ax[i].arrow(0, 0,
+                            estimator.components_[x_index, j],
+                            estimator.components_[y_index, j],
+                            color='r', alpha=0.6, head_width=0.02, head_length=0.02)
 
-            # 8-9) 서브플롯 제목과 축 이름 
+                # 화살표 끝보다 조금(1.15배) 바깥에 변수 이름을 적어 겹침을 피한다
+                ax[i].text(estimator.components_[x_index, j] * 1.15,
+                        estimator.components_[y_index, j] * 1.15,
+                        feature, color='b', fontsize=8, ha='center', va='center')
+
+            # 8-9) 서브플롯 제목과 축 이름
+            ax[i].set_title(f'Biplot: {xname} vs {yname}', fontsize=16)
+            ax[i].set_xlabel(xname)
+            ax[i].set_ylabel(yname)
+            ax[i].get_legend().remove()    # 범례는 제거    
+ 
         # 8-10) 사용하지 않은 칸은 축을 숨긴다
-        # 8-11) 그래프 출력 
+        for a in ax[len(pairs):]:
+            a.axis('off')
+
+        # 8-11) 그래프 출력
+        my_plot.show()
+
     # --- 9) 학습된 PCA 객체 저장 (선택) ---
+    # 이 객체가 있어야 test 데이터에 같은 주성분 축을 적용(transform)할 수 있다
+    if save_path:
+        # 9-1) 저장 폴더 준비
+        folder = os.path.dirname(save_path)
+        if folder:
+            os.makedirs(folder, exist_ok=True)   # 경로에 없는 폴더가 있으면 만들어 준다
+
+        # 9-2) 파일로 저장
+        joblib.dump(estimator, save_path)
+
+        if report:
+            print(f'\nPCA 객체 저장: {save_path} (주성분 {len(cols)}개)')
+
     # --- 10) 주성분 점수 데이터프레임 반환 ---
+    return result
