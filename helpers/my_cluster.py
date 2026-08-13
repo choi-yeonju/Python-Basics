@@ -1,12 +1,22 @@
+import numpy as np
+import seaborn as sb
+from pandas import DataFrame
+
+# K-평균 군집분석, 계층적(병합형) 군집분석 
+from sklearn.cluster import KMeans, AgglomerativeClustering
+
+# 계층적 군집이 합쳐온 과정을 나무 모양으로 그려주는 함수 
+from scipy.cluster.hierarchy import dendrogram
+
+# 군집 품질 평가 지표 
+from sklearn.metrics import silhouette_samples, silhouette_score
+
+# 곡선이 꺾이는 지점(엘보우 포인트)을 계산해주는 패키지 
+from kneed import KneeLocator
+
 from . import RANDOM_STATE
 from . import my_prep
 from . import my_plot
-from pandas import DataFrame
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score, silhouette_samples
-import seaborn as sb
-import numpy as np
-from kneed import KneeLocator
 
 def kmeans(data, k, columns=None, scaling='standard', cluster_name='그룹번호',
            random_state=RANDOM_STATE, n_init=10, verbose=True, plot=True, x=None, y=None,
@@ -507,4 +517,225 @@ def best_k(data, klist=None, columns=None, scaling='standard',
     return final_k, result_df 
 
 
+
+# ===================================================================
+# 덴드로그램 재료 — 계층적 군집이 합쳐온 과정을 그림용 표로 바꾼다
+# 원본: https://scikit-learn.org/stable/auto_examples/cluster/plot_agglomerative_dendrogram.html
+# ===================================================================
+def dendrogram_source(estimator):
+    """계층적 군집 모델을 scipy의 dendrogram()이 읽는 linkage 행렬로 변환하는 함수
+
+    sklearn의 AgglomerativeClustering은 "무엇과 무엇을 합쳤는지(children_)"와
+    "얼마나 먼 거리에서 합쳤는지(distances_)"를 따로 들고 있을 뿐, 덴드로그램을
+    바로 그려주지는 않는다. 그림을 그리려면 여기에 "그 가지 아래에 원본 데이터가
+    몇 개나 들어 있는지"를 더한 네 칸짜리 표가 필요하므로 그 개수를 세어 붙인다.
+
+    Args:
+        estimator: compute_distances=True 로 학습한 AgglomerativeClustering 모델
+
+    Returns:
+        ndarray: [자식1, 자식2, 병합거리, 포함 샘플수] 형태의 linkage 행렬
+    """
+    # --- 1) 병합 거리가 기록되어 있는지 확인 ---
+    # compute_distances=True 없이 학습하면 거리를 남기지 않아 높이를 그릴 수 없다
+    if getattr(estimator, 'distances_', None) is None:
+        raise ValueError("덴드로그램을 그리려면 "
+                         "AgglomerativeClustering(compute_distances=True) 로 학습해야 합니다.")
+
+    # --- 2) 병합 단계마다 그 아래에 몇 개의 원본 데이터가 들어있는지 센다 ---
+    counts = np.zeros(estimator.children_.shape[0])
+    n_samples = len(estimator.labels_)
+
+    for i, merge in enumerate(estimator.children_):
+        current_count = 0
+
+        for child_idx in merge:
+            if child_idx < n_samples:
+                current_count += 1                              # 아직 병합되지 않은 개별 데이터
+            else:
+                current_count += counts[child_idx - n_samples]  # 이미 병합된 군집
+
+        counts[i] = current_count
+
+    # --- 3) 네 칸(자식1, 자식2, 병합거리, 포함 샘플수)을 옆으로 이어 붙인다 ---
+    return np.column_stack([estimator.children_,
+                            estimator.distances_, counts]).astype(float)
+
+def _cut_height(estimator):
+    """계층적 군집 모델이 나무를 자른 높이(병합 거리)를 계산하는 내부 공용 함수
+
+    Args:
+        estimator: 학습이 끝난 AgglomerativeClustering 모델 
+    
+    Returns:
+        float: 자른 높이 (자를 곳이 없으면 None)
+    
+    """
+    # --- 1) 거리 기준으로 잘랐다면 그 값이 곧 자른 높이 --- 
+    if getattr(estimator, 'distance_threshold', None) is not None:
+        return estimator.distance_threshold
+
+    # --- 2) 군집 수로 잘랐다면 병합 거리 사이에서 되돌린다 --- 
+    # (데이터 n개를 k개로 만들려면 n-k번 합쳐야 한다)
+    distances = np.sort(estimator.distances_)
+    n_merged = len(estimator.labels_) - estimator.n_clusters_
+
+    if n_merged >= len(distances): # 하나로 다 합친 경우에는 나무의 꼭대기 위쪽이 자른 높이 
+        return distances[-1] * 1.05
+
+    if n_merged < 1: # 아무것도 합치지 않은 경우에는 자를 높이가 없다 
+        return None
+
+    return (distances[n_merged-1] + distances[n_merged])/2
+
+def plot_dendrogram(estimator, cut_height=None, title=None,
+                     p=30, truncate_mode='lastp', leaf_rotation=0, leaf_font_size=8,
+                     count_sort='ascending', cut_line=True, cut_color='#ff0000',
+                     xlabel=None, ylabel='병합 거리',
+                     width=1280, height=640, save_path=None, ax=None):
+    """계층적 군집 모델이 합쳐온 과정을 덴드로그램으로 그리는 함수
+    
+    Args (기본값은 위의 함수 정의 참고): 
+        estimator: compute_distances=True로 학습한 AgglomerativeClustering 모델
+        cut_height: 나무를 자른 높이(병합 거리). 니 농ㅍ이 아래의 가지를 군집벼로 다른 색으로 칠하고 가로선으로 표시한다 
+                    None이면 모델이 실제로 자른 높이를 직접 계산해서 쓰므로, 보통은 지정할 필요가 없다. 
+        title, xlabel, ylabel: 그래프 제목(None이면 '덴드로그램'), x축, y축 이름 
+                        (xlabel이 None이면 가지를 묶어 그리는지에 따라 자동으로 정한다)
+        p, truncate_mode: 표시할 가지의 개수와 생략 방식 
+                ('lastp'=마지막 p개의 가지만, None이면 데이터 전체를 그린다)
+        leaf_ratation, leaf_font_size, count_sort: 아래쪽 눈금의 최전 각도, 글자 크기, 
+                    가지의 정렬 기준('ascending'이면 작은 덩어리를 왼쪽에 둔다)
+        cut_line, cut_color: 자를 높이를 가로선으로 표시할지 여부와 그 색상 
+        width, height, save_path, ax: 캔버스 가로 세로 픽셀, 저장 경로, 
+                            그래프를 그릴 Axes 객체(None이면 새로 생성)
+    """
+    # --- 1) 모델이 합쳐온 과정을 dendrogram()이 읽는 표(linkage 행렬)로 변환 ---
+    source = dendrogram_source(estimator)
+
+    # --- 2) 자른 높이 확인 (지정하지 않았다면 모델이 실제로 자른 높이를 되돌린다) ---
+    if cut_height is None: 
+        cut_height = _cut_height(estimator)
+
+    # --- 3) 제목과 x축 이름 결정 ---
+    if title is None: title='덴드로그램'
+
+    # 가지를 묶어 그리는 경우에만 눈금에 (묶인 개수)가 표시되므로 축 이름을 나눠 쓴다 
+    if xlabel is None:
+        xlabel = '데이터 (괄호 안은 묶인 개수)' if truncate_mode else '데이터'  
+
+    # --- 4) 그래프 초기화 (ax를 전달받은 경우에는 그 위에 겹쳐 그린다) ---
+    fig = None
+    if ax is None:
+        fig, ax = my_plot.init(width=width, height=height, title=title, 
+                               xlabel=xlabel, ylabel=ylabel)
+        
+    # --- 5) 덴드로그램 그리기 ---
+    # color_threshold: 자른 높이보다 아래쪽 가지를 군집별로 다른 색으로 칠한다 
+    dendrogram(source, ax=ax, p=p, truncate_mode=truncate_mode,
+               leaf_rotation=leaf_rotation, leaf_font_size=leaf_font_size,
+               count_sort=count_sort, color_threshold=cut_height)
+    
+    # --- 6) 나무를 자른 높이를 가로선으로 표시 ---
+    # (이 선과 만나는 가지의 수가 곧 군집 수다)
+    if cut_line and cut_height is not None:
+        ax.axhline(y=cut_height, color=cut_color, linestyle='--')
+        ax.text(ax.get_xlim()[1], cut_height, f' 자른 높이 = {cut_height:.3f}',
+                color=cut_color, va='bottom', ha='right')
+        
+    # --- 7) 그래프 표시 (ax를 전달받은 경우에는 호출한 쪽에서 표시한다) ---
+    if fig is not None:
+        my_plot.show(save_path=save_path)
+
+def agglomerative(data, k=None, distance_threshold=None, columns=None, scaling='standard',
+                   cluster_name='그룹번호', linkage='ward', metric='euclidean',
+                   verbose=True, plot=True, title=None,
+                   p=30, truncate_mode='lastp', leaf_rotation=0, leaf_font_size=8,
+                   count_sort='ascending', cut_line=True, cut_color='#ff0000',
+                   width=1280, height=640, save_path=None, ax=None):
+    """데이터를 계층적으로 묶어 군집화하고, 합쳐온 과정을 덴드로그램으로 시각화하는 함수
+    
+    Args (기본값은 위의 함수 정의 참고):
+        data: 군집화할 데이터 프레임 
+        k: 나눌 군집의 개수 (distance_threshold와 둘 중 하나만 지정한다)
+        distance_threshold: 병합을 멈출 거리 기준 (이 값 이상 떨어진 덩어리는 합치지 않는다)
+        columns, cluster_name: 사용할 컬럼(None이면 수치형 전체), 군집 번호를 저장할 컬럼명
+        scaling: 스케일러 이름('standard' / 'minmax'/ 'robust'/ 'maxabs', None이면 원본 값)
+        linkage: 두 덩어리 사이의 거리를 재는 방법 
+            ('ward'=합쳤을 때 분산 증가가 최소, 'complete'=가장 먼 쌍,
+             'average'=모든 쌍의 평균, 'single'=가장 가까운 쌍)
+        metric: 데이터 사이의 거리 계산 방식 (linkage='ward'는 'euclidean'만 지원한다)
+        verbose: 스케일링 전후의 값의 범위와 군집별 데이터 개수를 출력할지 여부
+        plot, title: 덴드로그램 시각화 여부, 그래프 제목(None이면 자동 생성)
+        p, truncate_model: 덴드로그램에 표시할 가지의 개수와 생략 방식 
+            ('lastp'=마지막 p개의 가지만, None이면 데이터 전체를 그린다)
+        leaf_ratation, leaf_font_size, count_sort: 아래쪽의 눈금의 회전 각도, 글자 크기, 
+                                        가지의 정렬 기준('ascending'이면 작은 덩어리를 왼쪽에 둔다)
+        cut_line, cut_color: 나무를 자른 높이를 가로선으로 표시할지 여부와 그 색상 
+        width, height, save_path, ax: 캔버스 가로 세로 픽셀, 저장 경로, 
+                            그래프를 그릴 Axes 객체(None이면 새로 생성)
+    
+    Returns: 
+        tuple: (estimator, df) - 학습이 완료된 모델, 
+                                군집 번호 컬럼이 추가된 데이터(스케일링 적용 후)
+    """
+    # --- 1) 자를 기준이 하나만 지정되었는지 확인 ---
+    # 군집 수와 거리 기준은 "나무를 어디서 자를까"에 대한 서로 다른 답이므로 함께 쓸 수 없다 
+    if (k is None) == (distance_threshold is None):
+        raise ValueError("k(군집 수)와 distance_threshold(거리 기준) 중 "
+                         "하나만 지정해야 합니다.")
+
+    # --- 2) 군집화에 사용할 컬럼 결정 ---
+    # 지정이 없으면 수치형 컬럼만 자동 선택 (문자열 컬럼은 거리 계산이 불가능하다)
+    if columns is None:
+        columns = list(data.select_dtypes(include='number').columns)
+
+    # --- 3) 스케일링 적용 ---
+    if scaling: 
+        df = my_prep.scaling(data[columns], method=scaling, verbose=verbose)
+    else: 
+        df = data[columns].copy()
+
+    # --- 4) 모델 생성 및 학습 (가까운 덩어리부터 차례로 합치는 과정) ---
+    # compute_distances: 병합 거리를 남겨야 덴드로그램의 높이를 그릴 수 있다 
+    # compute_full_tree: 중간에 멈추면 나무의 윗부분이 잘려 덴드로그램이 불완전해진다 
+    estimator = AgglomerativeClustering(n_clusters=k, distance_threshold=distance_threshold,
+                                        linkage=linkage, metric=metric, 
+                                        compute_distances=True, compute_full_tree=True)
+    estimator.fit(df)
+
+    # --- 5) 각 데이터가 몇 번 그룹인지 컬럼으로 추가 ---
+    # 계층적 군집은 새로운 데이터를 예측하는 기능이 없으므로 학습 결과(labels_)를 그대로 쓴다 
+    df[cluster_name] = estimator.labels_
+
+    # --- 6) 나무를 자른 높이 계산 ---
+    cut_height = _cut_height(estimator)
+
+    # --- 7) 군집 결과 요약 출력 ---
+    if verbose:
+        sizes = df[cluster_name].value_counts().sort_index()
+
+        print(f"[계층적 군집]군집 수 = {estimator.n_clusters_}, "
+              f"연결 방법 = {linkage}, 거리 = {metric}")
+
+        if cut_height is not None:
+            print(f"  . 자른 높이(병합거리) = {cut_height:.4f}")    
+
+        print("   . 군집별 데이터 개수: " + ', '.join([f"{c}번 {n}개" for c, n in sizes.items()]))
+        
+    # --- 8) 덴드로그램 시각화 ---
+    if plot: 
+        # 제목을 지정하지 않은 경우 자른 기준과 군집 개수를 포함한 제목을 자동으로 생성 
+        if title is None: 
+            basis = (f'거리 {distance_threshold}' if distance_threshold is not None else f'군집수 {k}') 
+            title = f'덴드로그램 ({basis} 기준 -> {estimator.n_clusters_}개 군집)'  
+
+            # 그리는 일은 덴드로그램 함수에 맡긴다 (자른 높이를 넘겨 가로선과 색을 함께 표시)
+            plot_dendrogram(estimator, cut_height=cut_height, title=title,
+                            p=p, truncate_mode=truncate_mode,
+                            leaf_rotation=leaf_rotation, leaf_font_size=leaf_font_size,
+                            count_sort=count_sort, cut_line=cut_line, cut_color=cut_color,
+                            width=width, height=height, save_path=save_path, ax=ax)
+
+    # --- 9) 모델과 군집 결과 반환 ---
+    return estimator, df
 

@@ -766,3 +766,90 @@ def pca(df, y=None, n_components=0.8, scale=True, method='standard',
 
     # --- 10) 주성분 점수 데이터프레임 반환 ---
     return result
+
+def replace_missing(df, columns=None, method='mean', value=None, verbose=True):
+    """
+    지정한 컬럼들의 결측치를 삭제하거나 다른 값으로 대체하는 함수
+
+    Args:
+        df (DataFrame): 결측치를 처리할 데이터프레임
+        columns (list, optional): 결측치를 처리할 컬럼명 리스트.
+            None 이면 결측치가 있는 컬럼을 자동으로 선택한다 (기본값: None)
+        method (str): 결측치를 어떻게 처리할지 지정한다. 대소문자는 구분하지 않는다 (기본값: 'mean')
+            - 'drop':    결측치가 있는 행을 삭제
+            - 'value':   사용자가 value 파라미터로 지정한 고정값
+            - 'mean':    해당 컬럼의 평균   (수치형)
+            - 'median':  해당 컬럼의 중앙값 (수치형)
+            - 'max':     해당 컬럼의 최댓값 (수치형)
+            - 'min':     해당 컬럼의 최솟값 (수치형)
+            - 'mode':    해당 컬럼의 최빈값 (수치형·범주형 모두 가능)
+        value (any, optional): method='value' 일 때 결측치를 대체할 고정값 (기본값: None)
+        verbose (bool): 컬럼별 결측치 개수와 대체값을 출력할지 여부 (기본값: True)
+
+    Returns:
+        DataFrame: 결측치가 처리된 데이터프레임 (원본은 변경되지 않는다)
+    """
+    # --- 1) 처리 대상 컬럼 결정 ---
+    name = method.lower().strip()
+
+    # 처리 대상 컬럼 결정: 지정이 없으면 결측치가 있는 컬럼만 자동 선택
+    # 단, 평균·중앙값·최댓값·최솟값은 수치형에만 쓸 수 있으므로 수치형 컬럼으로 한정한다
+    if columns is None:
+        target = df
+        if name in ['mean', 'median', 'max', 'min']:
+            target = df.select_dtypes(include='number')
+
+        counts = target.isna().sum()
+        columns = list(counts[counts > 0].index)
+
+    # --- 2) 작업 준비 ---
+    result = df.copy()      # 원본을 보존하기 위해 복사본으로 작업
+    report = []              # verbose 출력을 위해 컬럼별 처리 내역을 기록
+
+    # --- 3) 삭제 방식은 행 단위로 한 번에 처리하고 끝낸다 ---
+    # 대상 컬럼 중 하나라도 결측이면 그 행을 통째로 지운다
+    if name == 'drop':
+        result = df.dropna(subset=columns).reset_index(drop=True)
+
+        if verbose:
+            print(f"결측치 처리 방식: 'drop' (대상 컬럼 {len(columns)}개)")
+            print(f'행 수: {len(df)}개 -> {len(result)}개 ({len(df) - len(result)}개 삭제)')
+
+        return result
+
+    # --- 4) 컬럼별 대체값 계산 및 결측치 대체 ---
+    for c in columns:
+        count = df[c].isna().sum()
+
+        # 4-1) method 에 따라 대체값을 정한다
+        if name == 'mean':
+            fill = df[c].mean()
+        elif name == 'median':
+            fill = df[c].median()
+        elif name == 'max':
+            fill = df[c].max()
+        elif name == 'min':
+            fill = df[c].min()
+        elif name == 'mode':
+                # 최빈값은 동점이면 여러 개가 나오므로 첫 번째 값을 사용한다
+            fill = df[c].mode()[0]
+        else:
+            fill = value
+
+        # 4-2) 정해진 값으로 그 컬럼의 결측치를 채운다
+        result[c] = df[c].fillna(fill)
+        report.append([c, count, fill])
+
+    # --- 5) 처리 내역 출력 (컬럼별 결측치 개수와 대체값) ---
+    if verbose:
+        print(f"결측치 처리 방식: '{name}'")
+        print(f'{"컬럼":12s}{"결측치":>14s}{"대체값":>20s}')
+        print('-' * 44)
+
+        for c, count, fill in report:
+            ratio = count / len(df) * 100
+            found = f'{count}개({ratio:.1f}%)'
+            print(f'{c:12s}{found:>12s}{str(fill):>18s}')
+
+    # --- 6) 결측치가 처리된 데이터프레임 반환 ---
+    return result

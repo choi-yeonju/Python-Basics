@@ -1,0 +1,42 @@
+# ===================================================================
+# 덴드로그램 재료 — 계층적 군집이 합쳐온 과정을 그림용 표로 바꾼다
+# 원본: https://scikit-learn.org/stable/auto_examples/cluster/plot_agglomerative_dendrogram.html
+# ===================================================================
+def dendrogram_source(estimator):
+    """계층적 군집 모델을 scipy의 dendrogram()이 읽는 linkage 행렬로 변환하는 함수
+
+    sklearn의 AgglomerativeClustering은 "무엇과 무엇을 합쳤는지(children_)"와
+    "얼마나 먼 거리에서 합쳤는지(distances_)"를 따로 들고 있을 뿐, 덴드로그램을
+    바로 그려주지는 않는다. 그림을 그리려면 여기에 "그 가지 아래에 원본 데이터가
+    몇 개나 들어 있는지"를 더한 네 칸짜리 표가 필요하므로 그 개수를 세어 붙인다.
+
+    Args:
+        estimator: compute_distances=True 로 학습한 AgglomerativeClustering 모델
+
+    Returns:
+        ndarray: [자식1, 자식2, 병합거리, 포함 샘플수] 형태의 linkage 행렬
+    """
+    # --- 1) 병합 거리가 기록되어 있는지 확인 ---
+    # compute_distances=True 없이 학습하면 거리를 남기지 않아 높이를 그릴 수 없다
+    if getattr(estimator, 'distances_', None) is None:
+        raise ValueError("덴드로그램을 그리려면 "
+                         "AgglomerativeClustering(compute_distances=True) 로 학습해야 합니다.")
+
+    # --- 2) 병합 단계마다 그 아래에 몇 개의 원본 데이터가 들어있는지 센다 ---
+    counts = np.zeros(estimator.children_.shape[0])
+    n_samples = len(estimator.labels_)
+
+    for i, merge in enumerate(estimator.children_):
+        current_count = 0
+
+        for child_idx in merge:
+            if child_idx < n_samples:
+                current_count += 1                              # 아직 병합되지 않은 개별 데이터
+            else:
+                current_count += counts[child_idx - n_samples]  # 이미 병합된 군집
+
+        counts[i] = current_count
+
+    # --- 3) 네 칸(자식1, 자식2, 병합거리, 포함 샘플수)을 옆으로 이어 붙인다 ---
+    return np.column_stack([estimator.children_,
+                            estimator.distances_, counts]).astype(float)
