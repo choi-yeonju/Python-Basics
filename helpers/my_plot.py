@@ -611,7 +611,8 @@ def stackplot(data, x, y, hue, aggfunc=np.sum, orient='v', ratio=False,
         show(save_path=save_path)
 
 def scatterplot(data, x, y, hue=None, marker='o', color=None, size=100,
-                edgecolor='#ffffff', linewidth=1.5, alpha=1, palette=None,
+                edgecolor='#ffffff', linewidth=1.5, alpha=1, 
+                legend=True,  palette=None,
                 outline=True, title=None, xlabel=None, ylabel=None,
                 width=1280, height=640, save_path=None, ax=None):
     """
@@ -662,6 +663,7 @@ def scatterplot(data, x, y, hue=None, marker='o', color=None, size=100,
                    edgecolor = edgecolor,    # 마커 테두리 색상 
                    linewidth=linewidth,      # 마커 테두리 두께
                    alpha = alpha,            # 마커 투명도
+                   legend=legend,            # 추가
                    ax=ax
                    )
     

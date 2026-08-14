@@ -3,7 +3,7 @@ import seaborn as sb
 from pandas import DataFrame
 
 # K-평균 군집분석, 계층적(병합형) 군집분석 
-from sklearn.cluster import KMeans, AgglomerativeClustering
+from sklearn.cluster import KMeans, AgglomerativeClustering, DBSCAN
 
 # 계층적 군집이 합쳐온 과정을 나무 모양으로 그려주는 함수 
 from scipy.cluster.hierarchy import dendrogram
@@ -738,4 +738,101 @@ def agglomerative(data, k=None, distance_threshold=None, columns=None, scaling='
 
     # --- 9) 모델과 군집 결과 반환 ---
     return estimator, df
+
+def dbscan(data, eps=0.5, min_samples=5, columns=None, scaling='standard',
+           cluster_name ='그룹번호', vector_name = '벡터유형', metric='euclidean', n_jobs=-1,
+           verbose=True, plot=True, x=None, y=None, title=None, outine=True, 
+           palette='tab10', size=100, degecolor='#ffffff', linewidth=1.5, alpha=1,
+           noise_marker='X', noise_size=150, noise_color='#ff0000', 
+           noise_edgecolor='#000000', noise_linewidth=1.5,
+           width=1280, height=640, save_path=None, ax=None):
+    """반경 안의 데이터 개수(밀도)를 기준으로 군집화 하고, 그 결과를 시각화하는 함수 
+    
+    Args (기본값은 위의 함수 정의 참고):
+        data: 군집화할 데이터 프레임
+        eps: 이웃으로 인정할 반경 (가장 중요한 값. 표준화 기준 0.3~1.0에서 탐색한다)
+        min_sample: 반경 안에 있어야 할 최소 데이터 개수 (변수가 2~3개면 3~6)
+        columns, cluster_name, vector_name: 사용할 컬럼(None이면 수치형 전체), 
+            군집 번호, 벡터 유형을 저장할 컬럼명 
+        scaling: 스케일러 이름('standard' / 'minmax' / 'robust' / 'maxabs', None이면 원본 값)
+        metric, n_jobs: 거리 계산 방식, 사용할 CPU 수 (-1이면 전부 사용)
+        verbose, plot: 스케일링 군집 요약의 출력 여부, 시각화 여부 
+        x, y, title: 산점도의 x, y축 컬럼명(None이면 대상 컬럼의 앞 두개), 그래프 제목 
+        outlien: 군집의 외곽선(ConvexHull)을 표시할지 여부 
+        palette, size, edgecolor, linewidth, alpha: 군집별 색상 팔레트(외곽 벡터 외곽선에도 같이 적용), 
+                    핵심 벡터의 마커 크기, 테두리 색상,테두리 두께, 투명도
+        core_marker, border_marker, border_size, border_alpha: 핵심 외곽 벡터의 마커 모양, 
+            외곽 벡터의 마커 크기와 투명도(색은 그대로 두고 농도만 낮춰 구분한다)
+        noise_marker, noise_size, noise_color, noise_edgecolor, noise_linewidth: 
+            노이즈 마커의 모양, 크기, 색상, 테두리 색상, 테두리 두께 
+        width, height, save_path, ax: 캔버스 가로 세로 픽셀, 저장 경로, 
+                        그래프를 그릴 Axes 객체(None이면 새로 생성)
+    Returns: 
+        tuple: (estimator, df, summary_df) - 학습이 완료된 모델, 
+            군집 번호 벡터 유형 컬럼이 추가된 데이터 (스케일링 적용 후),
+            군집별 데이터 개수, 비율, 벡터 유형 개수를 정리한 표(노이즈는 -1 행)
+    """
+    # --- 1) 군집화에 사용할 컬럼 결정 ---
+    # 지정이 없으면 수치형 컬럼만 자동 선택 (문자열 컬럼은 거리 계산이 불가능 하다)
+    if columns is None:
+        columns = list(data.select_dtypes(include='number').columns)    
+    
+    # --- 2) 스케일링 적용 ---
+    if scaling:
+        df = my_prep.scaling(data[columns], method=scaling, verbose=verbose)
+    else:
+        df = data[columns].copy()
+
+    # --- 3) 모델 생성 및 학습 (밀도가 높은 곳을 찾아 번호를 붙이는 과정)---
+    estimator = DBSCAN(eps=eps, min_samples=min_samples, metric=metric, n_jobs=n_jobs)
+    estimator.fit(df)
+
+    # DBSCAN에는 predict()가 없다. 학습 결과는 labels_ 에 들어있다 
+    labels = estimator.labels_
+
+    # --- 4) 각 데이터의 군집 번호와 벡터 유형을 컬럼으로 추가 --- 
+    # 핵심(core): 반경 안에 min_samples개 이상을 거느린 데이터 (군집의 몸통)
+    # 외곽(border): 스스로는 기준에 못 미치지만 핵심의 반경 안에 있는 데이터 (군집의 가장자리)
+    # 노이즈(noise): 어느 쪽도 아닌 데이터 (군집 번호가 -1)
+
+    # 'border'라는 값으로 채운, 데이터 길이와 동일한 배열 생서 
+    vectors = np.full(len(df), 'border', dtype=object)
+
+    # core_sample_indices_ 는 "몇 번째 행"인지를 담은 위치 번호 이므로 위치로 사용한다 
+    # 이 위치에 해당하는 벡터 유형을 'core'로 바꾼다 
+    vectors[estimator.core_sample_indices_] = 'core'
+
+    # 노이즈는 labels_ 가 -1 이므로 따로 처리한다 
+    vectors[labels == -1] = 'noise'
+
+    # 원본 데이터에 군집 번호와 벡터 유형 컬럼을 추가한다 
+    df[cluster_name] = labels
+    df[vector_name] = vectors 
+
+    # --- 5) 군집별 요약 정리 --- 
+    # 노이즈(-1)는 군집이 아니므로 군집 개수에서 제외한다 
+    cluster_ids = sorted([c for c in set(labels) if c != -1])   
+    n_clusters = len(cluster_ids)
+    n_noise = int((labels == -1).sum())
+
+    items = []
+
+    for c in sorted(set(labels)):
+        mask = labels == c
+
+        items.append({
+            cluster_name: c, 
+            '데이터수': int(mask.sum()),
+            '비율(%)': round(mask.sum() / len(labels)*100, 1),
+            '핵심벡터': int((vectors[mask] == 'core').sum()),
+            '외곽벡터': int((vectors[mask] == 'border').sum()),
+        })
+
+    summary_df = DataFrame(items)
+
+    # --- 6) 군집 결과 요약 출력 ---
+    if verbose:
+        print(f"[]")
+    # --- 7) 군집 결과 시각화 --- 
+    # --- 8) 모델, 군집 결과, 요약 표 반환 --- 
 
