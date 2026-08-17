@@ -8,6 +8,9 @@ from sklearn.cluster import KMeans, AgglomerativeClustering, DBSCAN
 # 계층적 군집이 합쳐온 과정을 나무 모양으로 그려주는 함수 
 from scipy.cluster.hierarchy import dendrogram
 
+# 각 데이터에서 가까운 순서로 k개의 이웃을 찾아주는 클래스 (k-distance plot에 사용)
+from sklearn.neighbors import NearestNeighbors
+
 # 군집 품질 평가 지표 
 from sklearn.metrics import silhouette_samples, silhouette_score
 
@@ -741,8 +744,9 @@ def agglomerative(data, k=None, distance_threshold=None, columns=None, scaling='
 
 def dbscan(data, eps=0.5, min_samples=5, columns=None, scaling='standard',
            cluster_name ='그룹번호', vector_name = '벡터유형', metric='euclidean', n_jobs=-1,
-           verbose=True, plot=True, x=None, y=None, title=None, outine=True, 
-           palette='tab10', size=100, degecolor='#ffffff', linewidth=1.5, alpha=1,
+           verbose=True, plot=True, x=None, y=None, title=None, outline=True, 
+           palette='tab10', size=100, edgecolor='#ffffff', linewidth=1.5, alpha=1,
+           core_marker='o', border_marker='^', border_size=120, border_alpha=0.5,
            noise_marker='X', noise_size=150, noise_color='#ff0000', 
            noise_edgecolor='#000000', noise_linewidth=1.5,
            width=1280, height=640, save_path=None, ax=None):
@@ -832,7 +836,176 @@ def dbscan(data, eps=0.5, min_samples=5, columns=None, scaling='standard',
 
     # --- 6) 군집 결과 요약 출력 ---
     if verbose:
-        print(f"[]")
-    # --- 7) 군집 결과 시각화 --- 
-    # --- 8) 모델, 군집 결과, 요약 표 반환 --- 
+        print(f"[DBSCAN] eps = {eps}, min_samples = {min_samples}, 거리 = {metric}")
+        print(f"  · 군집 수 = {n_clusters}개 (노이즈 제외)")
+        print(f"  · 노이즈 = {n_noise}개 (전체의 {n_noise / len(labels):.1%})")
+
+        # 군집이 하나도 만들어지지 않았다면 두 값이 데이터의 밀도와 맞지 않는다는 뜻이다
+        if n_clusters == 0:
+            print("  · 군집이 만들어지지 않았습니다. "
+                "eps 를 키우거나 min_samples 를 줄여 다시 시도해 보세요.")
+
+        display(summary_df)
+
+    # --- 7) 군집 결과 시각화 ---
+    if plot:
+        # 7-0) 컬럼, 제목 설정
+        # 축으로 사용할 컬럼 결정 (지정이 없으면 대상 컬럼의 앞에서 두 개)
+        if x is None:      x = columns[0]
+        if y is None:       y = columns[1]
+
+        # 제목을 지정하지 않은 경우 두 하이퍼파라미터를 포함한 제목을 자동으로 생성
+        if title is None:
+            title = f'DBSCAN 군집 결과 (eps={eps:.3g}, min_samples={min_samples})'
+
+        # 7-1) 그래프 초기화 (ax를 전달받은 경우에는 그 위에 겹쳐 그린다)
+        fig = None
+
+        if ax is None:
+            fig, ax = my_plot.init(width=width, height=height, title=title,
+                                    xlabel=x, ylabel=y)
+
+
+        # 7-2) 벡터 유형에 따라 데이터를 세 덩어리로 나눈다
+        # (한 번에 그리지 않고 나눠 그려야 유형마다 마커 모양과 농도를 달리할 수 있다)
+        core = df[df[vector_name] == 'core']
+        border = df[df[vector_name] == 'border']
+        noise = df[df[vector_name] == 'noise']
+
+        # 7-3) 핵심 벡터 --> 군집별 색상, 진한 마커
+        if not core.empty:
+            my_plot.scatterplot(data=core, x=x, y=y, hue=cluster_name,
+                                palette=palette, marker=core_marker, size=size,
+                                edgecolor=edgecolor, linewidth=linewidth,
+                                alpha=alpha, outline=False, ax=ax)
+
+        # 7-4) 외곽 벡터 --> 군집별 색상(동일), 연한 마커
+        # (범례에 같은 군집이 두 번 나오므로 범례는 끈다)
+        if not border.empty:
+            my_plot.scatterplot(data=border, x=x, y=y, hue=cluster_name,
+                                palette=palette, marker=border_marker, size=border_size,
+                                edgecolor=edgecolor, linewidth=linewidth,
+                                alpha=border_alpha, outline=False, ax=ax, legend=False)
+
+        # 7-5) 외곽선은 군집 단위로 그린다
+        # (핵심/외곽으로 나눠 그리면 하나의 군집이 두 개로 쪼개져 보인다)
+        if outline and cluster_ids:
+            my_plot.plot_hull(data=df[df[cluster_name] != -1], x=x, y=y,
+                            hue=cluster_name, palette=palette, ax=ax)
+
+        # 7-6) 노이즈 --> 군집이 아니므로 팔레트 없이 눈에 띄는 마커로 덧그린다
+        # (이상치 후보를 바로 찾기 위한 표시)
+        if not noise.empty:
+            my_plot.scatterplot(data=noise, x=x, y=y,
+                                marker=noise_marker, size=noise_size,
+                                color=noise_color, edgecolor=noise_edgecolor,
+                                linewidth=noise_linewidth, outline=False, ax=ax,
+                                label='noise')
+
+        # 7-7) 그래프 표시 (ax를 전달받은 경우에는 호출한 쪽에서 표시한다)
+        if fig is not None:
+            my_plot.show(save_path=save_path)
+    # --- 8) 모델, 군집 결과, 요약 표 반환 ---
+    return estimator, df, summary_df     # ← if문에 속하지 않은 코드 (들여쓰기 주의)
+
+def best_eps(data, min_samples=5, columns=None, scaling='standard',
+             metric='euclidean', n_jobs=-1, sensitivity=1.0, verbose=True,
+             plot=True, title=None, color='#1f77b4', linestyle='-',
+             best_color='#ff0000', width=1280, height=640, save_path=None, ax=None):
+    """k-distance plot 의 꺾이는 지점을 찾아 DBSCAN 의 최적 eps 를 추정하는 함수
+
+    Args (기본값은 위의 함수 정의 참고):
+        data: 군집화할 데이터프레임
+        min_samples: 반경 안에 있어야 할 최소 데이터 개수 (이 값이 곧 k가 된다)
+        columns, scaling: 사용할 컬럼(None이면 수치형 전체),
+            스케일러 이름(None이면 원본 값, 이미 스케일링한 데이터라면 None)
+        metric, n_jobs: 거리 계산 방식, 사용할 CPU 수(-1이면 전부 사용)
+        sensitivity: KneeLocator의 민감도(S). 작을수록 작은 꺾임에도 반응한다
+        verbose, plot, title: 계산 결과 출력 여부, 시각화 여부,
+            그래프 제목(None이면 자동 생성)
+        color, linestyle, best_color: 거리 곡선의 색상·선 스타일,
+            꺾이는 지점을 표시할 가로·세로선의 색상
+        width, height, save_path, ax: 캔버스 가로·세로 픽셀, 저장 경로,
+            그래프를 그릴 Axes 객체(None이면 새로 생성)
+
+    Returns:
+        tuple: (best_eps, result_df) - eps 후보,
+            거리 순위별 k번째 이웃까지의 거리가 담긴 데이터프레임
+    """
+    # --- 1) 대상 컬럼 결정 ---
+    # 지정이 없으면 수치형 컬럼만 자동 선택 (문자열 컬럼은 거리 계산이 불가능하다)
+    if columns is None:
+        columns = list(data.select_dtypes(include='number').columns)
+
+    # --- 2) 스케일링 적용 ---
+    # 거리를 재는 계산이므로 단위가 큰 변수가 거리를 독점하지 않도록 맞춰준다
+    if scaling:
+        df = my_prep.scaling(data[columns], method=scaling, verbose=verbose)
+    else:
+        df = data[columns].copy()
+
+    # --- 3) 각 데이터에서 k번째 이웃까지의 거리 구하기 ---
+    k = min_samples
+
+    neighbors = NearestNeighbors(n_neighbors=k, metric=metric, n_jobs=n_jobs)
+    neighbors.fit(df)
+
+    # distance[i] = i번째 데이터에서 이웃들까지의 거리 (가까운 순)
+    # kneighbors() 는 자기 자신을 0번 이웃으로 포함하므로 마지막 열이 곧
+    # "자기 포함 min_samples 개를 채우려면 반경을 얼마까지 벌려야 하는가"가 된다
+    distance, _ = neighbors.kneighbors(df)
+
+    # 마지막 열만 뽑아서 작은 순으로 정렬한다.
+    # 정렬해야 x축이 밀도 순위가 되어 끝에서 치솟는 모양을 눈으로 확인할 수 있다
+    target = np.sort(distance[:, k - 1])
+
+    # --- 4) 결과 정리 ---
+    result_df = DataFrame({
+        '순위': range(1, len(target) + 1),
+        f'{k}번째 이웃까지의 거리': np.round(target, 4),
+    })
+
+    # --- 5) 꺾이는 지점(엘보우 포인트) 찾기 ---
+    # convex(아래로 볼록) + increasing(우상향)은 정렬된 거리 곡선의 모양이다
+    kl = KneeLocator(range(len(target)), target, curve='convex',
+                      direction='increasing', S=sensitivity)
+
+    point = kl.elbow        # 꺾이는 지점의 '순서'
+    eps = kl.elbow_y         # 꺾이는 지점의 '거리' → 이것이 eps 후보
+
+    # 곡선이 거의 직선이면 꺾이는 지점이 없어 None이 나온다
+    if eps is None:
+        print("곡선이 완만해 꺾이는 지점을 찾지 못했습니다. "
+              "sensitivity 를 낮추거나 min_samples 를 조정해 다시 시도해 보세요.")
+        return None, result_df
+
+    if verbose:
+        print(f"[k-distance] min_samples = {k}, 최적의 eps = {eps:.4f}")
+        print(f"  · 꺾이는 위치 = {point}번째 데이터 (전체 {len(target)}개 중)")
+        print(f"  · 노이즈 후보 = {int((target > eps).sum())}개 (거리가 eps 보다 먼 데이터)")
+
+    # --- 6) 시각화 ---
+    if plot:
+        if title is None:
+            title = f'{k}번째 이웃까지의 거리 (k-distance plot)'
+
+        fig = None
+        if ax is None:
+            fig, ax = my_plot.init(width=width, height=height, title=title,
+                                    xlabel='거리 순으로 정렬한 데이터', ylabel='거리')
+
+        my_plot.lineplot(x=list(range(len(target))), y=target,
+                          color=color, linestyle=linestyle, ax=ax)
+
+        # 꺾이는 지점을 가로선(거리)과 세로선(순서)으로 표시
+        ax.axhline(y=eps, color=best_color, linestyle='--', linewidth=1)
+        ax.axvline(x=point, color=best_color, linestyle='--', linewidth=1)
+        ax.text(0, eps, f'eps = {eps:.4f}', color=best_color, va='bottom')
+
+        if fig is not None:
+            my_plot.show(save_path=save_path)
+
+    # --- 7) eps 후보와 거리 표 반환 ---
+    return eps, result_df
+
 

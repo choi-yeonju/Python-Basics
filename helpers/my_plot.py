@@ -612,7 +612,7 @@ def stackplot(data, x, y, hue, aggfunc=np.sum, orient='v', ratio=False,
 
 def scatterplot(data, x, y, hue=None, marker='o', color=None, size=100,
                 edgecolor='#ffffff', linewidth=1.5, alpha=1, 
-                legend=True,  palette=None,
+                legend=True,  palette=None, label=None, 
                 outline=True, title=None, xlabel=None, ylabel=None,
                 width=1280, height=640, save_path=None, ax=None):
     """
@@ -653,25 +653,61 @@ def scatterplot(data, x, y, hue=None, marker='o', color=None, size=100,
     else: 
         color = None
 
-    # 산점도 그리기 
-    sb.scatterplot(data=data, x=x, y=y, 
-                   hue = hue,                # 군집을 구분할 분류값이 있는 컬럼명,
-                   color = color,            # 마커 색상 
-                   palette=palette,          # 색상 팔레트 설정 
-                   marker=marker,            # 마커 모양 
-                   s = size,                 # 마커 크기 (기본값 = 100) 
-                   edgecolor = edgecolor,    # 마커 테두리 색상 
-                   linewidth=linewidth,      # 마커 테두리 두께
-                   alpha = alpha,            # 마커 투명도
-                   legend=legend,            # 추가
-                   ax=ax
-                   )
+    # # 산점도 그리기 
+    # sb.scatterplot(data=data, x=x, y=y, 
+    #                hue = hue,                # 군집을 구분할 분류값이 있는 컬럼명,
+    #                color = color,            # 마커 색상 
+    #                palette=palette,          # 색상 팔레트 설정 
+    #                marker=marker,            # 마커 모양 
+    #                s = size,                 # 마커 크기 (기본값 = 100) 
+    #                edgecolor = edgecolor,    # 마커 테두리 색상 
+    #                linewidth=linewidth,      # 마커 테두리 두께
+    #                alpha = alpha,            # 마커 투명도
+    #                legend=legend,            # 추가
+    #                ax=ax
+    #                )
     
+    # # hue가 없을 때만 label 적용 (hue가 있으면 seaborn이 자동으로 범례 생성) 추가
+    # if hue is None and label is not None:
+    #     scatter_kwargs['label'] = label
+
+    # sb.scatterplot(**scatter_kwargs) 추가
+
+    # # 외곽선 그리기 
+    # if outline and hue is not None : 
+    #     # 외곽선 그리기 
+    #     plot_hull(data=data, x=x, y=y, hue=hue, palette=palette, ax=ax)
+
+
+    # # 그래프 표시 
+    # if fig is not None:
+    #     show(save_path=save_path)
+
+    # 산점도 그리기 위한 인자 구성
+    scatter_kwargs = dict(
+        data=data, x=x, y=y,
+        hue=hue,                 # 군집을 구분할 분류값이 있는 컬럼명
+        color=color,             # 마커 색상
+        palette=palette,         # 색상 팔레트 설정
+        marker=marker,           # 마커 모양
+        s=size,                  # 마커 크기 (기본값 = 100)
+        edgecolor=edgecolor,     # 마커 테두리 색상
+        linewidth=linewidth,     # 마커 테두리 두께
+        alpha=alpha,             # 마커 투명도
+        legend=legend,           # 범례 표시 여부
+        ax=ax
+    )
+
+    # hue가 없을 때만 label 적용 (hue가 있으면 seaborn이 자동으로 범례 생성)
+    if hue is None and label is not None:
+        scatter_kwargs['label'] = label
+
+    # 산점도 그리기 
+    sb.scatterplot(**scatter_kwargs)
+
     # 외곽선 그리기 
     if outline and hue is not None : 
-        # 외곽선 그리기 
         plot_hull(data=data, x=x, y=y, hue=hue, palette=palette, ax=ax)
-
 
     # 그래프 표시 
     if fig is not None:
